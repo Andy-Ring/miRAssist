@@ -10,7 +10,7 @@ import streamlit as st
 #----------------------------
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 APP_AUTHOR = "Andy Ring"
 
 
@@ -193,7 +193,7 @@ with st.sidebar:
                 st.success(f"OK: {out}")
             except Exception as e:
                 st.error(str(e))
-    sidebar_spacer(17)
+    sidebar_spacer(10)
     # Footer pinned to bottom of sidebar
     sidebar_footer(APP_AUTHOR, APP_VERSION)
 
