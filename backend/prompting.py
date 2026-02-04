@@ -12,7 +12,7 @@ Rules:
 - Treat expression/correlation as supportive evidence, not proof of regulation.
 - Be explicit about uncertainty and alternative hypotheses.
 - If user asks for "top N", provide exactly N ranked items.
-- When in NOVEL mode, do NOT recommend miRTarBase functional pairs as "novel"; you may still mention them as known.
+- When in NOVEL mode, do NOT recommend miRTarBase functional pairs as "novel".
 """
 
 
@@ -71,11 +71,10 @@ def build_user_prompt(
 {task}
 
 Requirements:
-- Provide a ranked list of {output_item}s with short justifications grounded in the evidence cards.
+- Provide a ranked list of {output_item}s with short justifications grounded in the evidence cards. Be specific about how the evidence supports the interaction.
 - Use database support signals: miRTarBase functional, ENCORI CLIP, TargetScan context++ (more negative is stronger), and miRDB scores (higher is stronger).
 - If TCGA correlation/repression evidence appears in cards, use it as supportive context only.
 - If phenotype/pathway hints are present, prefer {output_item}s that plausibly fit those hints *when the cards support them*.
-- After ranking, propose 3–5 concrete experiments + controls.
 
 User question:
 {user_question.strip()}

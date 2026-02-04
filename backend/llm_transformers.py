@@ -1,9 +1,6 @@
 # backend/llm_transformers.py
 from __future__ import annotations
 
-import os
-from typing import Optional
-
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
@@ -41,15 +38,11 @@ def chat(
         {"role": "user", "content": user},
     ]
 
-    prompt = tok.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-
+    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = tok(prompt, return_tensors="pt")
     inputs = {k: v.to(mdl.device) for k, v in inputs.items()}
 
+    prompt_len = inputs["input_ids"].shape[1]
     do_sample = temperature > 0
 
     with torch.no_grad():
@@ -62,9 +55,7 @@ def chat(
             eos_token_id=tok.eos_token_id,
         )
 
-    text = tok.decode(out[0], skip_special_tokens=True)
-
-    # Heuristic: return content after the last user content.
-    # (Good enough for v0.1; later you can parse more robustly.)
-    tail = text.split(messages[-1]["content"])[-1].strip()
-    return tail
+    # Slice off the prompt tokens so we return ONLY newly generated tokens
+    gen_ids = out[0][prompt_len:]
+    text = tok.decode(gen_ids, skip_special_tokens=True).strip()
+    return text

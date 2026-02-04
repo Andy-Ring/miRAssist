@@ -151,6 +151,9 @@ def sidebar_footer(author: str, version: str):
         """,
         unsafe_allow_html=True,
     )
+def sidebar_spacer(n=1):
+    for _ in range(n):
+        st.markdown("")
 # ----------------------------
 # UI
 # ----------------------------
@@ -190,7 +193,7 @@ with st.sidebar:
                 st.success(f"OK: {out}")
             except Exception as e:
                 st.error(str(e))
-
+    sidebar_spacer(17)
     # Footer pinned to bottom of sidebar
     sidebar_footer(APP_AUTHOR, APP_VERSION)
 

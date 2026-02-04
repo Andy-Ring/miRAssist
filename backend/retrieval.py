@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Optional, Tuple, Any, Set
+from typing import Dict, Iterable, List, Optional, Tuple, Any
 
+import re
 import numpy as np
 import pandas as pd
 
@@ -28,17 +29,11 @@ class RetrievalConfig:
     require_expression: bool = False
 
 
+# ----------------------------
+# Helpers: safety + columns
+# ----------------------------
 def _normalize_token(x: str) -> str:
     return str(x).strip()
-
-
-def _is_mirna_token(token: str) -> bool:
-    t = token.lower()
-    return ("mir" in t) or t.startswith("hsa-") or t.startswith("mmu-") or t.startswith("rno-")
-
-
-def _direction_from_token(token: str) -> str:
-    return "mirna_to_targets" if _is_mirna_token(token) else "gene_to_mirnas"
 
 
 def _ensure_cols(ev: pd.DataFrame, cols: Iterable[str]) -> None:
@@ -59,6 +54,124 @@ def _safe_float_col(ev: pd.DataFrame, col: str, default: float = 0.0) -> pd.Seri
     return pd.to_numeric(ev[col], errors="coerce").fillna(default).astype(float)
 
 
+# ----------------------------
+# miRNA matching (NO substring!)
+# ----------------------------
+_ARM_RE = re.compile(r"(?i)(?:^|[-_])(3p|5p)$")
+_SPECIES_PREFIX_RE = re.compile(r"(?i)^(hsa|mmu|rno|dme|cel|ath)[-_]")
+
+
+def _strip_species_prefix(s: str) -> str:
+    return _SPECIES_PREFIX_RE.sub("", s.strip())
+
+
+def _normalize_mirna_query(user_mirna: str) -> Tuple[str, Optional[str]]:
+    """
+    Returns (base, arm) where base is normalized like:
+      "mir-21", "mir-17-5", "let-7a", etc. (lowercase, hyphen-delimited)
+    arm is "3p"/"5p" if explicitly provided by user, else None.
+    """
+    s = (user_mirna or "").strip()
+    if not s:
+        return "", None
+
+    s = s.replace("_", "-")
+    s = re.sub(r"\s+", "", s)
+
+    s = _strip_species_prefix(s)
+    s = s.lower()
+
+    # capture explicit arm at end
+    arm = None
+    m = _ARM_RE.search(s)
+    if m:
+        arm = m.group(1).lower()
+        s = _ARM_RE.sub("", s)
+
+    # Ensure mir/let have hyphen if missing (mir21 -> mir-21)
+    s = re.sub(r"^(mir|let)(?=[0-9a-z])", r"\1-", s)
+
+    # collapse double hyphens
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+
+    return s, arm
+
+
+def resolve_mirna_names_for_table(user_mirna: str, mirna_series: pd.Series) -> List[str]:
+    """
+    Map user query (miR-21, hsa-miR-21, miR-21-3p) -> exact table tokens to match.
+    Defaults:
+      - if no arm specified: prefer 5p
+    Safety:
+      - EXACT match only (prevents miR-21 matching miR-214)
+    Fallback if preferred token not in table:
+      1) base-only exact
+      2) other arm exact (3p)
+    """
+    base, arm = _normalize_mirna_query(user_mirna)
+    if not base:
+        return []
+
+    # Table normalization for matching
+    vals = mirna_series.dropna().astype(str)
+    vals_lower = vals.str.lower()
+
+    # Table uses hsa- prefix typically, but allow missing prefix if any.
+    prefixes = ["hsa-", ""]  # keep minimal and deterministic
+
+    def cand(arm_: Optional[str]) -> List[str]:
+        out: List[str] = []
+        for pref in prefixes:
+            if arm_:
+                out.append(f"{pref}{base}-{arm_}")
+            else:
+                out.append(f"{pref}{base}")
+        return out
+
+    # If arm specified: try exact arm then base-only
+    if arm in ("3p", "5p"):
+        primary = cand(arm)
+        hits = vals[vals_lower.isin([x.lower() for x in primary])].unique().tolist()
+        if hits:
+            return hits
+
+        base_only = cand(None)
+        hits = vals[vals_lower.isin([x.lower() for x in base_only])].unique().tolist()
+        return hits
+
+    # No arm: default to 5p
+    primary = cand("5p")
+    hits = vals[vals_lower.isin([x.lower() for x in primary])].unique().tolist()
+    if hits:
+        return hits
+
+    # fallback: base-only exact
+    base_only = cand(None)
+    hits = vals[vals_lower.isin([x.lower() for x in base_only])].unique().tolist()
+    if hits:
+        return hits
+
+    # fallback: try 3p exact
+    fallback = cand("3p")
+    hits = vals[vals_lower.isin([x.lower() for x in fallback])].unique().tolist()
+    return hits
+
+
+# ----------------------------
+# Direction inference
+# ----------------------------
+def _is_mirna_token(token: str) -> bool:
+    t = token.lower()
+    return ("mir" in t) or t.startswith("hsa-") or t.startswith("mmu-") or t.startswith("rno-")
+
+
+def _direction_from_token(token: str) -> str:
+    return "mirna_to_targets" if _is_mirna_token(token) else "gene_to_mirnas"
+
+
+# ----------------------------
+# Main retrieval
+# ----------------------------
 def retrieve_candidates(
     ev: pd.DataFrame,
     query_token: str,
@@ -72,47 +185,43 @@ def retrieve_candidates(
 
     _ensure_cols(ev, ["mirna_name", "gene_symbol", "support_count"])
 
-    # Work from a fresh copy of the full evidence table each time
-    base = ev.copy()
+    # Start from full table; apply filters with masks on same frame.
+    df = ev
 
     # --- Novel mode is the only hard exclude by design ---
-    if cfg.novel and "mirtarbase_pos" in base.columns:
-        base = base[_bool_col(base, "mirtarbase_pos") == 0]
+    if cfg.novel and "mirtarbase_pos" in df.columns:
+        df = df[_bool_col(df, "mirtarbase_pos") == 0]
 
     # --- Minimal pre-filter only (soft) ---
     if cfg.min_support > 0:
-        base = base[pd.to_numeric(base["support_count"], errors="coerce").fillna(0).astype(int) >= cfg.min_support]
+        sc = pd.to_numeric(df["support_count"], errors="coerce").fillna(0).astype(int)
+        df = df[sc >= cfg.min_support]
 
     # --- Optional soft gates (off by default) ---
     if cfg.require_binding_evidence:
-        base = base[
-            (_bool_col(base, "support_targetscan") == 1)
-            | (_bool_col(base, "support_encori") == 1)
-            | (_bool_col(base, "support_mirdb") == 1)
+        df = df[
+            (_bool_col(df, "support_targetscan") == 1)
+            | (_bool_col(df, "support_encori") == 1)
+            | (_bool_col(df, "support_mirdb") == 1)
         ]
 
     if cfg.require_expression and cfg.tcga:
         pair_expr = f"{cfg.tcga}_pair_expressed"
-        if pair_expr in base.columns:
-            base = base[_bool_col(base, pair_expr) == 1]
+        if pair_expr in df.columns:
+            df = df[_bool_col(df, pair_expr) == 1]
 
-    # --- Restrict to relevant row set by direction (exact match first) ---
-    df = base
+    # --- Restrict to relevant row set by direction ---
+    matched_tokens: List[str] = []
     if direction == "mirna_to_targets":
-        exact = df["mirna_name"].astype(str).str.lower() == query_token.lower()
-        df_exact = df[exact]
-        df = df_exact
-    else:
-        exact = df["gene_symbol"].astype(str).str.upper() == query_token.upper()
-        df_exact = df[exact]
-        df = df_exact
+        allowed = resolve_mirna_names_for_table(query_token, df["mirna_name"])
+        matched_tokens = allowed
+        if not allowed:
+            return df.head(0), direction
 
-    # --- Fallback: if miRNA exact match fails, try a contains match safely on *base* ---
-    if len(df) == 0 and direction == "mirna_to_targets":
-        qlow = query_token.lower()
-        qlow2 = qlow.replace("mir-", "mir").replace("miR-", "mir")
-        mask = base["mirna_name"].astype(str).str.lower().str.contains(qlow2, na=False)
-        df = base[mask].copy()
+        df = df[df["mirna_name"].astype(str).str.lower().isin([a.lower() for a in allowed])]
+    else:
+        df = df[df["gene_symbol"].astype(str).str.upper() == query_token.upper()]
+        matched_tokens = [query_token]
 
     if len(df) == 0:
         return df.head(0), direction
@@ -176,12 +285,12 @@ def retrieve_candidates(
             pathway_bonus = np.clip(hits_f / 5.0, 0, 1.0)
 
     score = (
-        1.0 * support +
-        1.0 * ts_contrib +
-        0.7 * clip_contrib +
-        0.7 * mirdb_contrib +
-        0.8 * tcga_contrib +
-        0.6 * pathway_bonus
+        1.0 * support
+        + 1.0 * ts_contrib
+        + 0.7 * clip_contrib
+        + 0.7 * mirdb_contrib
+        + 0.8 * tcga_contrib
+        + 0.6 * pathway_bonus
     )
 
     df = df.assign(
@@ -192,6 +301,7 @@ def retrieve_candidates(
         retrieval_mirdb_contrib=mirdb_contrib,
         retrieval_tcga_contrib=tcga_contrib,
         retrieval_pathway_bonus=pathway_bonus,
+        matched_query_tokens=";".join(matched_tokens),
     )
 
     df = df.sort_values("retrieval_score", ascending=False)
@@ -229,4 +339,3 @@ def retrieve_from_queryspec(ev: pd.DataFrame, queryspec: Dict[str, Any]) -> Tupl
     )
 
     return retrieve_candidates(ev, str(token), cfg)
-
