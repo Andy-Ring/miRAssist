@@ -5,16 +5,65 @@ import pandas as pd
 import requests
 import streamlit as st
 
+
+#-----------------------------
+# Logo
+#-----------------------------
+with st.sidebar:
+    st.image(
+        "assets/miRAssist_logo.png",
+        use_container_width=True
+    )
+
+#-----------------------------
+# Styling
+#-----------------------------
+st.markdown(
+    """
+    <style>
+    :root {
+        --mir-green: #5DBB63;
+        --mir-teal: #2CA6A4;
+        --mir-dark: #0E1117;
+    }
+
+    body {
+        background-color: var(--mir-dark);
+    }
+
+    h1, h2, h3 {
+        color: var(--mir-teal);
+    }
+
+    .stButton>button {
+        background-color: var(--mir-teal);
+        color: black;
+        border-radius: 8px;
+        font-weight: 600;
+    }
+
+    .stButton>button:hover {
+        background-color: var(--mir-green);
+        color: black;
+    }
+
+    section[data-testid="stSidebar"] {
+        background-color: #111827;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+
+
 #----------------------------
 # Dev Info
 #----------------------------
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"
 APP_AUTHOR = "Andy Ring"
-
-
-
 
 # ----------------------------
 # Helpers
@@ -157,7 +206,6 @@ def sidebar_spacer(n=1):
 # ----------------------------
 # UI
 # ----------------------------
-st.set_page_config(page_title="miRAssist", layout="wide")
 st.title("miRAssist")
 st.caption("Ask a question to query the miRNA-Target Database")
 
@@ -174,9 +222,9 @@ with st.sidebar:
     api_url = normalize_base_url(api_url)
     st.session_state["api_url"] = api_url
 
-    colA, colB = st.columns(2)
+    colA, colB = st.columns([3,2])
     with colA:
-        ping = st.button("Test /health")
+        ping = st.button("Test Connection")
     with colB:
         clear = st.button("Clear")
 
@@ -193,7 +241,7 @@ with st.sidebar:
                 st.success(f"OK: {out}")
             except Exception as e:
                 st.error(str(e))
-    sidebar_spacer(10)
+    
     # Footer pinned to bottom of sidebar
     sidebar_footer(APP_AUTHOR, APP_VERSION)
 
