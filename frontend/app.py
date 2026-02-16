@@ -60,9 +60,8 @@ st.markdown(
 #----------------------------
 # Dev Info
 #----------------------------
-
 APP_NAME = "miRAssist"
-APP_VERSION = "0.3.0"
+APP_VERSION = "0.4.0"
 APP_AUTHOR = "Andy Ring"
 
 # ----------------------------
@@ -140,6 +139,7 @@ def pick_summary_markdown(answer_obj) -> str | None:
 
     return None
 
+
 def typewriter_markdown(md: str, container, cps: int = 60, chunk: str = "word"):
     """
     Animate markdown text in a 'typing' style.
@@ -167,6 +167,7 @@ def typewriter_markdown(md: str, container, cps: int = 60, chunk: str = "word"):
             out_words.append(w)
             container.markdown(" ".join(out_words), unsafe_allow_html=False)
             time.sleep(delay)
+
 
 def sidebar_footer(author: str, version: str):
     # Push footer to bottom
@@ -200,9 +201,13 @@ def sidebar_footer(author: str, version: str):
         """,
         unsafe_allow_html=True,
     )
+
+
 def sidebar_spacer(n=1):
     for _ in range(n):
         st.markdown("")
+
+
 # ----------------------------
 # UI
 # ----------------------------
@@ -241,10 +246,9 @@ with st.sidebar:
                 st.success(f"OK: {out}")
             except Exception as e:
                 st.error(str(e))
-    
+
     # Footer pinned to bottom of sidebar
     sidebar_footer(APP_AUTHOR, APP_VERSION)
-
 
 
 st.subheader("Ask a question")
@@ -314,6 +318,19 @@ with c5:
         ),
     )
 
+# NEW: pathway mode override (auto/boost/filter)
+st.markdown("#### Pathway mode (override)")
+pathway_mode = st.selectbox(
+    "Pathway integration mode",
+    options=["auto", "boost", "filter"],
+    index=0,
+    help=(
+        "auto: planner decides\n"
+        "boost: prefer genes in relevant pathways\n"
+        "filter: ONLY return genes in relevant pathways"
+    ),
+)
+
 run = st.button("Run miRAssist", type="primary", disabled=(not api_url or not question.strip()))
 
 # ----------------------------
@@ -331,6 +348,8 @@ if run:
             "min_support": int(min_support),
             "require_binding_evidence": bool(require_binding),
             "require_expression": bool(require_expression),
+            # NEW: pass pathway override through to backend
+            "pathway_mode": str(pathway_mode),
         }
 
         resp = safe_request_json("POST", f"{api_url}/query", json=submit_payload, timeout=30)
@@ -391,11 +410,14 @@ if result:
         if summary_md:
             placeholder = st.empty()
             if st.session_state.get("animate_answer", True):
-                typewriter_markdown(summary_md, placeholder, cps=int(st.session_state.get("typing_speed", 80)),
-                                    chunk=st.session_state.get("typing_mode", "word"))
+                typewriter_markdown(
+                    summary_md,
+                    placeholder,
+                    cps=int(st.session_state.get("typing_speed", 80)),
+                    chunk=st.session_state.get("typing_mode", "word"),
+                )
             else:
                 placeholder.markdown(summary_md, unsafe_allow_html=False)
-
 
         with st.expander("Planner output (QuerySpec)", expanded=False):
             st.json(result.get("queryspec", {}))
