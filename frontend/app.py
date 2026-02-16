@@ -226,8 +226,7 @@ with st.sidebar:
                 st.success(f"OK: {out}")
             except Exception as e:
                 st.error(str(e))
-
-        sidebar_footer(APP_AUTHOR, APP_VERSION)
+    sidebar_footer(APP_AUTHOR, APP_VERSION)
 
 
 st.subheader("Ask a question")
