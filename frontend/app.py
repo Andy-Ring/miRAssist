@@ -227,23 +227,7 @@ with st.sidebar:
             except Exception as e:
                 st.error(str(e))
 
-    st.divider()
-    st.subheader("Display settings")
-    st.session_state["animate_answer"] = st.checkbox("Animate answer", value=st.session_state.get("animate_answer", True))
-    st.session_state["typing_mode"] = st.selectbox(
-        "Typing mode",
-        options=["word", "char"],
-        index=0 if st.session_state.get("typing_mode", "word") == "word" else 1,
-    )
-    st.session_state["typing_speed"] = st.slider(
-        "Typing speed",
-        min_value=20,
-        max_value=200,
-        value=int(st.session_state.get("typing_speed", 80)),
-        step=10,
-    )
-
-    sidebar_footer(APP_AUTHOR, APP_VERSION)
+        sidebar_footer(APP_AUTHOR, APP_VERSION)
 
 
 st.subheader("Ask a question")
