@@ -1,131 +1,72 @@
-from __future__ import annotations
+import os
+import subprocess
+import uuid
+from typing import Any, Dict
 
-import json
-import threading
-import time
-from typing import Optional
-
-import pandas as pd
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel, Field
 
-from backend.jobstore import JobStore
-from backend.planner import run_planner
-from backend.prompting import build_prompt_bundle
-from backend.retrieval import retrieve_from_queryspec
-from backend.llm_backend import generate_answer
+from backend.jobstore import read_job, write_job
 
 
-APP = FastAPI(title="miRAssist Backend", version="0.1.0")
-STORE = JobStore()
+app = FastAPI(title="miRAssist backend")
 
 
-# --------
-# API Models
-# --------
 class QueryRequest(BaseModel):
-    question: str = Field(..., min_length=1)
+    question: str
     novel: bool = True
-    k: int = 25
-    min_support: int = 2
+    k: int = 200
+    min_support: int = 1
     require_binding_evidence: bool = False
     require_expression: bool = False
-    # Optional override for pathway integration.
-    # - None/"auto": let the planner decide
-    # - "boost": soft preference toward genes in matched pathways
-    # - "filter": hard filter to genes in matched pathways
-    pathway_mode: Optional[str] = None
+    pathway_mode: str = Field(
+        default="auto",
+        description="Override pathway integration mode: auto|boost|filter",
+    )
 
 
-class QueryResponse(BaseModel):
-    query_id: str
-    status: str
-
-
-# --------
-# Helpers
-# --------
-def _run_job(query_id: str, req: QueryRequest) -> None:
-    """
-    Background job:
-      1) planner -> QuerySpec JSON
-      2) retrieval -> shortlist DataFrame
-      3) prompting -> LLM bundle
-      4) llm_backend -> answer text
-    """
-    try:
-        STORE.set_status(query_id, "running")
-
-        qs = run_planner(req.question)
-
-        # Apply user overrides (these are *preferences*; planner can still do entity extraction)
-        qs["novel"] = bool(req.novel)
-        qs["k"] = int(req.k)
-        qs.setdefault("filters", {})
-        qs["filters"]["min_support"] = int(req.min_support)
-        qs["filters"]["require_binding_evidence"] = bool(req.require_binding_evidence)
-        qs["filters"]["require_expression"] = bool(req.require_expression)
-
-        # Optional API override: pathway filter vs boost.
-        # This does NOT invent pathway keywords; it only changes how they are applied.
-        if req.pathway_mode is not None:
-            pm = str(req.pathway_mode).strip().lower()
-            if pm == "auto" or pm == "":
-                pass
-            elif pm in {"boost", "filter"}:
-                qs.setdefault("pathway_filter", {})
-                qs["pathway_filter"]["enabled"] = True
-                qs["pathway_filter"]["mode"] = pm
-            else:
-                raise ValueError("pathway_mode must be one of: auto, boost, filter")
-
-        # Load evidence once per job
-        ev = pd.read_parquet("data/processed/evidence_pairs_tcga.parquet")
-
-        shortlist_df, direction = retrieve_from_queryspec(ev, qs)
-
-        bundle = build_prompt_bundle(
-            queryspec=qs,
-            shortlist=shortlist_df,
-            direction=direction,
-        )
-
-        answer = generate_answer(bundle)
-
-        STORE.write_result(query_id, {
-            "queryspec": qs,
-            "direction": direction,
-            "bundle": bundle,
-            "answer": answer,
-        })
-        STORE.set_status(query_id, "completed")
-
-    except Exception as e:
-        STORE.set_status(query_id, "failed", error=str(e))
-
-
-# --------
-# Routes
-# --------
-@APP.get("/healthz")
-def healthz():
+@app.get("/health")
+def health():
     return {"ok": True}
 
 
-@APP.post("/query", response_model=QueryResponse)
-def query(req: QueryRequest):
-    query_id = STORE.new_id()
-    STORE.create_job(query_id, meta={"question": req.question})
+@app.post("/query")
+def submit_query(req: QueryRequest) -> Dict[str, Any]:
+    query_id = uuid.uuid4().hex[:16]
+    write_job(query_id, {"status": "queued"})
 
-    th = threading.Thread(target=_run_job, args=(query_id, req), daemon=True)
-    th.start()
+    cmd = [
+        "python", "-m", "backend.worker",
+        "--query_id", query_id,
+        "--question", req.question,
+        "--k", str(req.k),
+        "--min_support", str(req.min_support),
+    ]
 
-    return QueryResponse(query_id=query_id, status="queued")
+    if req.novel:
+        cmd.append("--novel")
+    if req.require_binding_evidence:
+        cmd.append("--require_binding_evidence")
+    if req.require_expression:
+        cmd.append("--require_expression")
+
+    pm = (req.pathway_mode or "auto").lower().strip()
+    if pm in ("boost", "filter"):
+        cmd += ["--pathway_mode", pm]
+
+    # Keep worker output out of the API process
+    env = os.environ.copy()
+    subprocess.Popen(cmd, env=env)
+
+    return {"query_id": query_id}
 
 
-@APP.get("/result/{query_id}")
-def result(query_id: str):
-    job = STORE.get_job(query_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="query_id not found")
-    return job
+@app.get("/status/{query_id}")
+def status(query_id: str) -> Dict[str, Any]:
+    job = read_job(query_id)
+    return {"status": job.get("status", "unknown")}
+
+
+@app.get("/result/{query_id}")
+def result(query_id: str) -> Dict[str, Any]:
+    return read_job(query_id)

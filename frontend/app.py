@@ -55,12 +55,14 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+
 #----------------------------
 # Dev Info
 #----------------------------
 APP_NAME = "miRAssist"
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.5.1"
 APP_AUTHOR = "Andy Ring"
+
 
 # ----------------------------
 # Helpers
@@ -185,11 +187,12 @@ def sidebar_footer(author: str, version: str):
         unsafe_allow_html=True,
     )
 
+
 # ----------------------------
 # UI
 # ----------------------------
 st.title("miRAssist")
-st.caption("Ask a question to query the miRNA-Target Database")
+st.caption("Ask a question to query the miRNA–Target database")
 
 with st.sidebar:
     st.subheader("Connection")
@@ -211,8 +214,8 @@ with st.sidebar:
         clear = st.button("Clear")
 
     if clear:
-        for k in ["last_result", "last_query_id", "last_error"]:
-            st.session_state.pop(k, None)
+        for k2 in ["last_result", "last_query_id", "last_error"]:
+            st.session_state.pop(k2, None)
 
     if ping:
         if not api_url:
@@ -225,12 +228,8 @@ with st.sidebar:
                 st.error(str(e))
 
     st.divider()
-    st.subheader("Answer display")
-
-    st.session_state["animate_answer"] = st.checkbox(
-        "Animate answer",
-        value=st.session_state.get("animate_answer", True),
-    )
+    st.subheader("Display settings")
+    st.session_state["animate_answer"] = st.checkbox("Animate answer", value=st.session_state.get("animate_answer", True))
     st.session_state["typing_mode"] = st.selectbox(
         "Typing mode",
         options=["word", "char"],
@@ -242,10 +241,10 @@ with st.sidebar:
         max_value=200,
         value=int(st.session_state.get("typing_speed", 80)),
         step=10,
-        help="Rough speed target. Word mode is smoother/faster.",
     )
 
     sidebar_footer(APP_AUTHOR, APP_VERSION)
+
 
 st.subheader("Ask a question")
 question = st.text_area(
@@ -256,7 +255,7 @@ question = st.text_area(
 
 st.markdown("### Override options (optional)")
 st.caption(
-    "miRAssist will infer settings from your question. These controls are only if you want to override default settings without specifying in the question."
+    "miRAssist will infer settings from your question. These controls override defaults without needing to specify in the question."
 )
 
 c1, c2, c3 = st.columns(3)
@@ -265,8 +264,8 @@ with c1:
         "Novel mode (override)",
         value=True,
         help=(
-            "If enabled, miRAssist will *not* recommend miRNA–gene pairs that are already "
-            "flagged as functional positives in miRTarBase as 'novel'. It may still mention them as known."
+            "If enabled, miRAssist will avoid labeling miRTarBase functional positives as 'novel'. "
+            "It may still mention known targets."
         ),
     )
 with c2:
@@ -276,22 +275,16 @@ with c2:
         max_value=200,
         value=25,
         step=5,
-        help=(
-            "How many candidates to retrieve before synthesis. Larger k can improve recall but may slow "
-            "the run or produce longer outputs."
-        ),
+        help="How many candidates to retrieve before synthesis.",
     )
 with c3:
     min_support = st.number_input(
         "Min support (override)",
         min_value=1,
-        max_value=6,
+        max_value=10,
         value=2,
         step=1,
-        help=(
-            "Minimum number of supporting evidence sources required for a pair to enter retrieval. "
-            "Example: 2 means the pair must have support from at least two evidence channels."
-        ),
+        help="Minimum number of supporting evidence channels required to keep a pair.",
     )
 
 c4, c5, c6 = st.columns(3)
@@ -299,29 +292,23 @@ with c4:
     require_binding = st.checkbox(
         "Require binding evidence (override)",
         value=False,
-        help=(
-            "If enabled, retrieval will only keep pairs with at least one binding-evidence source "
-            "(e.g., ENCORI CLIP, TargetScan sites, or miRDB). Usually leave OFF for discovery."
-        ),
+        help="If enabled, only keep pairs with binding-type evidence (e.g., CLIP/TargetScan/miRDB).",
     )
 with c5:
     require_expression = st.checkbox(
         "Require expression evidence (override)",
         value=False,
-        help=(
-            "If enabled, retrieval will require the miRNA and gene to be expressed in the selected context "
-            "(if TCGA context is available). Usually leave OFF unless you want to be strict."
-        ),
+        help="If enabled, require miRNA and gene expression evidence where available.",
     )
 with c6:
     pathway_mode = st.selectbox(
-        "Pathway integration (override)",
+        "Pathway mode (override)",
         options=["auto", "boost", "filter"],
         index=0,
         help=(
-            "auto: let planner decide.\n"
-            "boost: prefer genes in relevant pathways.\n"
-            "filter: only return genes in relevant pathways."
+            "auto: use planner defaults\n"
+            "boost: prefer genes with pathway hits\n"
+            "filter: only return genes with pathway hits"
         ),
     )
 
@@ -342,8 +329,7 @@ if run:
             "min_support": int(min_support),
             "require_binding_evidence": bool(require_binding),
             "require_expression": bool(require_expression),
-            # new override (backend can ignore if not implemented yet)
-            "pathway_mode_override": None if pathway_mode == "auto" else pathway_mode,
+            "pathway_mode": str(pathway_mode),
         }
 
         resp = safe_request_json("POST", f"{api_url}/query", json=submit_payload, timeout=30)
@@ -412,6 +398,8 @@ if result:
                 )
             else:
                 placeholder.markdown(summary_md, unsafe_allow_html=False)
+        else:
+            st.info("No summary text found in backend response.")
 
         with st.expander("Planner output (QuerySpec)", expanded=False):
             st.json(result.get("queryspec", {}))
