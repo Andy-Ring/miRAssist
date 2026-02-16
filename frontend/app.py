@@ -55,13 +55,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-
-
 #----------------------------
 # Dev Info
 #----------------------------
 APP_NAME = "miRAssist"
-APP_VERSION = "0.4.0"
+APP_VERSION = "0.5.0"
 APP_AUTHOR = "Andy Ring"
 
 # ----------------------------
@@ -99,26 +97,21 @@ def pick_summary_markdown(answer_obj) -> str | None:
     if answer_obj is None:
         return None
 
-    # If answer is already a string, treat as markdown
     if isinstance(answer_obj, str) and answer_obj.strip():
         return answer_obj
 
     if not isinstance(answer_obj, dict):
         return None
 
-    # --- Schema 1: answer["summary"] ---
     s = answer_obj.get("summary")
     if isinstance(s, str) and s.strip():
         return s
 
-    # --- Try answer["raw_text"] ---
     rt = answer_obj.get("raw_text")
 
-    # Schema 2: answer["raw_text"] is a string
     if isinstance(rt, str) and rt.strip():
         return rt
 
-    # Schema 3: answer["raw_text"] is a dict with summary/raw_text
     if isinstance(rt, dict):
         s2 = rt.get("summary")
         if isinstance(s2, str) and s2.strip():
@@ -128,7 +121,6 @@ def pick_summary_markdown(answer_obj) -> str | None:
         if isinstance(rt2, str) and rt2.strip():
             return rt2
 
-        # Schema 4: answer["raw_text"]["raw_text"] is a dict (double-wrapped)
         if isinstance(rt2, dict):
             s3 = rt2.get("summary")
             if isinstance(s3, str) and s3.strip():
@@ -141,12 +133,6 @@ def pick_summary_markdown(answer_obj) -> str | None:
 
 
 def typewriter_markdown(md: str, container, cps: int = 60, chunk: str = "word"):
-    """
-    Animate markdown text in a 'typing' style.
-
-    cps = characters per second target (roughly).
-    chunk = "char" or "word" (word is much faster and less flickery).
-    """
     if not md:
         return
 
@@ -158,10 +144,8 @@ def typewriter_markdown(md: str, container, cps: int = 60, chunk: str = "word"):
             container.markdown(out, unsafe_allow_html=False)
             time.sleep(delay)
     else:
-        # word mode
         words = md.split(" ")
         out_words = []
-        # approximate: average ~5 chars/word + 1 space
         delay = 1.0 / max(1, int(cps / 6))
         for w in words:
             out_words.append(w)
@@ -170,7 +154,6 @@ def typewriter_markdown(md: str, container, cps: int = 60, chunk: str = "word"):
 
 
 def sidebar_footer(author: str, version: str):
-    # Push footer to bottom
     st.sidebar.markdown(
         """
         <style>
@@ -202,12 +185,6 @@ def sidebar_footer(author: str, version: str):
         unsafe_allow_html=True,
     )
 
-
-def sidebar_spacer(n=1):
-    for _ in range(n):
-        st.markdown("")
-
-
 # ----------------------------
 # UI
 # ----------------------------
@@ -227,7 +204,7 @@ with st.sidebar:
     api_url = normalize_base_url(api_url)
     st.session_state["api_url"] = api_url
 
-    colA, colB = st.columns([3,2])
+    colA, colB = st.columns([3, 2])
     with colA:
         ping = st.button("Test Connection")
     with colB:
@@ -247,9 +224,28 @@ with st.sidebar:
             except Exception as e:
                 st.error(str(e))
 
-    # Footer pinned to bottom of sidebar
-    sidebar_footer(APP_AUTHOR, APP_VERSION)
+    st.divider()
+    st.subheader("Answer display")
 
+    st.session_state["animate_answer"] = st.checkbox(
+        "Animate answer",
+        value=st.session_state.get("animate_answer", True),
+    )
+    st.session_state["typing_mode"] = st.selectbox(
+        "Typing mode",
+        options=["word", "char"],
+        index=0 if st.session_state.get("typing_mode", "word") == "word" else 1,
+    )
+    st.session_state["typing_speed"] = st.slider(
+        "Typing speed",
+        min_value=20,
+        max_value=200,
+        value=int(st.session_state.get("typing_speed", 80)),
+        step=10,
+        help="Rough speed target. Word mode is smoother/faster.",
+    )
+
+    sidebar_footer(APP_AUTHOR, APP_VERSION)
 
 st.subheader("Ask a question")
 question = st.text_area(
@@ -298,7 +294,7 @@ with c3:
         ),
     )
 
-c4, c5 = st.columns(2)
+c4, c5, c6 = st.columns(3)
 with c4:
     require_binding = st.checkbox(
         "Require binding evidence (override)",
@@ -317,19 +313,17 @@ with c5:
             "(if TCGA context is available). Usually leave OFF unless you want to be strict."
         ),
     )
-
-# NEW: pathway mode override (auto/boost/filter)
-st.markdown("#### Pathway mode (override)")
-pathway_mode = st.selectbox(
-    "Pathway integration mode",
-    options=["auto", "boost", "filter"],
-    index=0,
-    help=(
-        "auto: planner decides\n"
-        "boost: prefer genes in relevant pathways\n"
-        "filter: ONLY return genes in relevant pathways"
-    ),
-)
+with c6:
+    pathway_mode = st.selectbox(
+        "Pathway integration (override)",
+        options=["auto", "boost", "filter"],
+        index=0,
+        help=(
+            "auto: let planner decide.\n"
+            "boost: prefer genes in relevant pathways.\n"
+            "filter: only return genes in relevant pathways."
+        ),
+    )
 
 run = st.button("Run miRAssist", type="primary", disabled=(not api_url or not question.strip()))
 
@@ -348,8 +342,8 @@ if run:
             "min_support": int(min_support),
             "require_binding_evidence": bool(require_binding),
             "require_expression": bool(require_expression),
-            # NEW: pass pathway override through to backend
-            "pathway_mode": str(pathway_mode),
+            # new override (backend can ignore if not implemented yet)
+            "pathway_mode_override": None if pathway_mode == "auto" else pathway_mode,
         }
 
         resp = safe_request_json("POST", f"{api_url}/query", json=submit_payload, timeout=30)

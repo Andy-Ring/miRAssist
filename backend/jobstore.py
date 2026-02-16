@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import numpy as np
 
@@ -12,12 +12,10 @@ try:
 except Exception:
     pd = None  # type: ignore
 
-JOB_DIR = Path("/tmp/mirassist_jobs")
-JOB_DIR.mkdir(parents=True, exist_ok=True)
 
-
-def job_path(query_id: str) -> Path:
-    return JOB_DIR / f"{query_id}.json"
+# Default location for job JSONs
+DEFAULT_JOB_DIR = Path("/tmp/mirassist_jobs")
+DEFAULT_JOB_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def _is_bad_float(x: float) -> bool:
@@ -29,7 +27,6 @@ def _to_jsonable(x: Any) -> Any:
     Recursively convert non-JSON-safe types into plain Python and
     replace NaN/Inf with None (Starlette disallows NaN/Inf).
     """
-    # None
     if x is None:
         return None
 
@@ -67,21 +64,60 @@ def _to_jsonable(x: Any) -> Any:
     return x
 
 
+class JobStore:
+    """
+    Backward/forward compatible job store.
+
+    - Some versions of backend/app.py expect:
+        from backend.jobstore import JobStore
+        store = JobStore(...)
+        store.write(query_id, payload)
+        store.read(query_id)
+
+    - Other versions use read_job/write_job functions directly.
+    This file supports both.
+    """
+
+    def __init__(self, job_dir: str | Path = DEFAULT_JOB_DIR):
+        self.job_dir = Path(job_dir)
+        self.job_dir.mkdir(parents=True, exist_ok=True)
+
+    def job_path(self, query_id: str) -> Path:
+        return self.job_dir / f"{query_id}.json"
+
+    def exists(self, query_id: str) -> bool:
+        return self.job_path(query_id).exists()
+
+    def read(self, query_id: str) -> Dict[str, Any]:
+        p = self.job_path(query_id)
+        if not p.exists():
+            return {"status": "unknown"}
+        try:
+            return json.loads(p.read_text())
+        except json.JSONDecodeError:
+            # can happen if read during atomic swap window or partial write
+            return {"status": "running"}
+
+    def write(self, query_id: str, payload: Dict[str, Any]) -> None:
+        p = self.job_path(query_id)
+        safe_payload = _to_jsonable(payload)
+
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(safe_payload, ensure_ascii=False))
+        tmp.replace(p)  # atomic write
+
+
+# -------------------------------------------------------------------
+# Function API (keep for compatibility with other backend versions)
+# -------------------------------------------------------------------
+
+def job_path(query_id: str) -> Path:
+    return DEFAULT_JOB_DIR / f"{query_id}.json"
+
+
 def read_job(query_id: str) -> Dict[str, Any]:
-    p = job_path(query_id)
-    if not p.exists():
-        return {"status": "unknown"}
-    try:
-        return json.loads(p.read_text())
-    except json.JSONDecodeError:
-        # can happen if read during atomic swap window or partial write
-        return {"status": "running"}
+    return JobStore(DEFAULT_JOB_DIR).read(query_id)
 
 
 def write_job(query_id: str, payload: Dict[str, Any]) -> None:
-    p = job_path(query_id)
-    safe_payload = _to_jsonable(payload)
-
-    tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(safe_payload, ensure_ascii=False))
-    tmp.replace(p)  # atomic write
+    JobStore(DEFAULT_JOB_DIR).write(query_id, payload)
