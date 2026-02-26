@@ -50,10 +50,9 @@ def main():
         shortlist_df, direction = retrieve_from_queryspec(ev, qs)
 
         bundle = build_prompt_bundle(
-            qs,
-            shortlist_df,
+            queryspec=qs,
+            shortlist=shortlist_df,
             direction=direction,
-            max_prompt_tokens=6500,
         )
 
         answer_obj = run_synthesizer(bundle)

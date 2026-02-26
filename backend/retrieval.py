@@ -1,12 +1,78 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+import os
 import re
+
 import numpy as np
 import pandas as pd
 
+
+# =============================================================================
+# Evidence loading (Colab-friendly)
+# =============================================================================
+
+_EVIDENCE_CACHE: Optional[pd.DataFrame] = None
+_EVIDENCE_PATH: Optional[str] = None
+
+
+def load_evidence(
+    evidence_path: str | None = None,
+    columns: list[str] | None = None,
+    force_reload: bool = False,
+) -> pd.DataFrame:
+    """
+    Load the evidence parquet once and cache it in-process.
+
+    Resolution order:
+      1) explicit argument
+      2) env MIASSIST_EVIDENCE
+      3) env MIASSIST_BASE + /data/processed/evidence_pairs_tcga.parquet
+      4) fallback: data/processed/evidence_pairs_tcga.parquet (relative)
+
+    Notes:
+      - Drops duplicate column labels if present.
+      - Designed for single-process Colab/uvicorn usage.
+    """
+    global _EVIDENCE_CACHE, _EVIDENCE_PATH
+
+    if evidence_path is None:
+        evidence_path = os.environ.get("MIASSIST_EVIDENCE")
+        if evidence_path is None:
+            base = os.environ.get("MIASSIST_BASE")
+            if base:
+                evidence_path = str(
+                    Path(base) / "data" / "processed" / "evidence_pairs_tcga.parquet"
+                )
+            else:
+                evidence_path = "data/processed/evidence_pairs_tcga.parquet"
+
+    evidence_path = str(Path(evidence_path).expanduser())
+
+    if (
+        not force_reload
+        and _EVIDENCE_CACHE is not None
+        and _EVIDENCE_PATH == evidence_path
+    ):
+        return _EVIDENCE_CACHE
+
+    df = pd.read_parquet(evidence_path, columns=columns) if columns else pd.read_parquet(evidence_path)
+
+    # Safety: remove duplicate column labels (can happen after merges)
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    _EVIDENCE_CACHE = df
+    _EVIDENCE_PATH = evidence_path
+    return df
+
+
+# =============================================================================
+# Retrieval config
+# =============================================================================
 
 @dataclass
 class RetrievalConfig:
@@ -28,13 +94,14 @@ class RetrievalConfig:
     require_binding_evidence: bool = False
     require_expression: bool = False
 
-    # IMPORTANT: collapse duplicate (miRNA,gene) rows before scoring
+    # Collapse duplicate (miRNA,gene) rows before scoring
     collapse_duplicates: bool = True
 
 
-# ----------------------------
+# =============================================================================
 # Helpers
-# ----------------------------
+# =============================================================================
+
 def _normalize_token(x: str) -> str:
     return str(x).strip()
 
@@ -48,7 +115,7 @@ def _ensure_cols(ev: pd.DataFrame, cols: Iterable[str]) -> None:
 def _bool_col(df: pd.DataFrame, col: str) -> pd.Series:
     if col not in df.columns:
         return pd.Series(np.zeros(len(df), dtype=int), index=df.index)
-    return df[col].fillna(0).astype(int)
+    return pd.to_numeric(df[col], errors="coerce").fillna(0).astype(int)
 
 
 def _safe_float_col(df: pd.DataFrame, col: str, default: float = 0.0) -> pd.Series:
@@ -63,11 +130,14 @@ def _safe_int_col(df: pd.DataFrame, col: str, default: int = 0) -> pd.Series:
     return pd.to_numeric(df[col], errors="coerce").fillna(default).astype(int)
 
 
-# ----------------------------
-# miRNA normalization + matching (EXACT, no substring)
-# ----------------------------
+# =============================================================================
+# miRNA normalization + matching (robust exact matching via normalization)
+# =============================================================================
+
 _ARM_RE = re.compile(r"(?i)(?:^|[-_])(3p|5p)$")
 _SPECIES_PREFIX_RE = re.compile(r"(?i)^(hsa|mmu|rno|dme|cel|ath)[-_]")
+_MICRORNA_PREFIX_RE = re.compile(r"(?i)^microrna[\s_-]*")  # includes non-ascii hyphen
+_MIR_PREFIX_RE = re.compile(r"(?i)^(mir|miR|let|Let)")
 
 
 def _strip_species_prefix(s: str) -> str:
@@ -84,8 +154,43 @@ def _normalize_mirna_query(user_mirna: str) -> Tuple[str, Optional[str]]:
     if not s:
         return "", None
 
-    s = s.replace("_", "-")
+    # normalize weird hyphens/underscores/spaces
+    s = s.replace("_", "-").replace("-", "-")
     s = re.sub(r"\s+", "", s)
+
+    # strip "microRNA" textual prefix if present
+    s = _MICRORNA_PREFIX_RE.sub("", s)
+
+    # strip species prefix (hsa-/mmu- etc)
+    s = _strip_species_prefix(s)
+
+    s = s.lower()
+
+    arm = None
+    m = _ARM_RE.search(s)
+    if m:
+        arm = m.group(1).lower()
+        s = _ARM_RE.sub("", s)
+
+    # ensure mir- / let- delimiter
+    s = re.sub(r"^(mir|let)(?=[0-9a-z])", r"\1-", s)
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+    return s, arm
+
+
+def _normalize_mirna_table_value(v: str) -> Tuple[str, Optional[str]]:
+    """
+    Normalize a table miRNA string into (base, arm) similar to query normalization.
+    Returns ("", None) if unusable.
+    """
+    if v is None:
+        return "", None
+    s = str(v).strip()
+    if not s:
+        return "", None
+    s = s.replace("_", "-").replace("-", "-")
+    s = re.sub(r"\s+", "", s)
+    s = _MICRORNA_PREFIX_RE.sub("", s)
     s = _strip_species_prefix(s)
     s = s.lower()
 
@@ -95,52 +200,66 @@ def _normalize_mirna_query(user_mirna: str) -> Tuple[str, Optional[str]]:
         arm = m.group(1).lower()
         s = _ARM_RE.sub("", s)
 
-    # mir21 -> mir-21, let7a -> let-7a
+    # "mir21" -> "mir-21", "let7a" -> "let-7a"
     s = re.sub(r"^(mir|let)(?=[0-9a-z])", r"\1-", s)
     s = re.sub(r"-{2,}", "-", s).strip("-")
+
+    # Some tables contain "mir" alone, ignore that
+    if s in ("mir", "let"):
+        return "", None
+
     return s, arm
 
 
 def resolve_mirna_names_for_table(user_mirna: str, mirna_series: pd.Series) -> List[str]:
     """
-    Map user query -> exact tokens present in table.
-    If no arm specified: prefer 5p.
+    Map user query -> EXACT values present in the table, but matched via normalization.
+    If no arm specified: prefer 5p, then base-only, then 3p.
     """
-    base, arm = _normalize_mirna_query(user_mirna)
-    if not base:
+    q_base, q_arm = _normalize_mirna_query(user_mirna)
+    if not q_base:
         return []
 
     vals = mirna_series.dropna().astype(str)
-    vals_lower = vals.str.lower()
+    if vals.empty:
+        return []
 
-    prefixes = ["hsa-", ""]  # keep deterministic
+    # Build normalization map once for unique names
+    uniq = vals.unique().tolist()
+    norm_map: Dict[Tuple[str, Optional[str]], List[str]] = {}
+    for raw in uniq:
+        b, a = _normalize_mirna_table_value(raw)
+        if not b:
+            continue
+        norm_map.setdefault((b, a), []).append(raw)
 
-    def candidates(arm_: Optional[str]) -> List[str]:
-        out: List[str] = []
-        for pref in prefixes:
-            out.append(f"{pref}{base}-{arm_}" if arm_ else f"{pref}{base}")
+    def hits_for(base: str, arm: Optional[str]) -> List[str]:
+        out = []
+        if (base, arm) in norm_map:
+            out.extend(norm_map[(base, arm)])
         return out
 
-    if arm in ("3p", "5p"):
-        c = candidates(arm)
-        hits = vals[vals_lower.isin([x.lower() for x in c])].unique().tolist()
-        if hits:
-            return hits
-        c = candidates(None)
-        return vals[vals_lower.isin([x.lower() for x in c])].unique().tolist()
+    # if explicit arm, try that first, then base-only
+    if q_arm in ("3p", "5p"):
+        h = hits_for(q_base, q_arm)
+        if h:
+            return sorted(set(h))
+        h = hits_for(q_base, None)
+        return sorted(set(h))
 
-    # no arm: try 5p, then base-only, then 3p
+    # no arm: prefer 5p, then base-only, then 3p
     for arm_try in ("5p", None, "3p"):
-        c = candidates(arm_try)
-        hits = vals[vals_lower.isin([x.lower() for x in c])].unique().tolist()
-        if hits:
-            return hits
+        h = hits_for(q_base, arm_try)
+        if h:
+            return sorted(set(h))
+
     return []
 
 
-# ----------------------------
+# =============================================================================
 # Direction inference
-# ----------------------------
+# =============================================================================
+
 def _is_mirna_token(token: str) -> bool:
     t = token.lower()
     return ("mir" in t) or t.startswith(("hsa-", "mmu-", "rno-"))
@@ -150,9 +269,10 @@ def _direction_from_token(token: str) -> str:
     return "mirna_to_targets" if _is_mirna_token(token) else "gene_to_mirnas"
 
 
-# ----------------------------
+# =============================================================================
 # Duplicate collapse (miRNA,gene) -> single row
-# ----------------------------
+# =============================================================================
+
 def _first_nonnull_value(series: pd.Series):
     """
     Return first 'meaningful' value from a groupby series.
@@ -162,7 +282,6 @@ def _first_nonnull_value(series: pd.Series):
         if v is None:
             continue
         try:
-            # pd.isna on arrays returns array; treat that as "not a scalar NA"
             na = pd.isna(v)
             if isinstance(na, (bool, np.bool_)) and na:
                 continue
@@ -197,6 +316,11 @@ def _collapse_pair_rows(df: pd.DataFrame) -> pd.DataFrame:
     if "support_count" in df.columns:
         agg["support_count"] = "max"
 
+    # Support tcga (new evidence line)
+    for col in df.columns:
+        if col.endswith("_support_tcga") or col == "support_tcga_any":
+            agg[col] = "max"
+
     # TargetScan
     if "ts_best_contextpp" in df.columns:
         agg["ts_best_contextpp"] = "min"
@@ -221,7 +345,7 @@ def _collapse_pair_rows(df: pd.DataFrame) -> pd.DataFrame:
     if "gene_pathway_hits" in df.columns:
         agg["gene_pathway_hits"] = "max"
 
-    # TCGA columns
+    # TCGA columns (raw correlations + booleans)
     for col in df.columns:
         if col.endswith("_spearman_rho"):
             agg[col] = "min"  # most negative = strongest repression signal
@@ -243,7 +367,13 @@ def _collapse_pair_rows(df: pd.DataFrame) -> pd.DataFrame:
             agg[col] = "max"
 
     # List-like columns
-    for c in ["cellline_tissue_set", "mirtarbase_pmids", "mirtarbase_experiments", "ts_gene_id_base", "entrez_ids"]:
+    for c in [
+        "cellline_tissue_set",
+        "mirtarbase_pmids",
+        "mirtarbase_experiments",
+        "ts_gene_id_base",
+        "entrez_ids",
+    ]:
         if c in df.columns:
             agg[c] = _first_nonnull_value
 
@@ -251,16 +381,26 @@ def _collapse_pair_rows(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# ----------------------------
-# Main retrieval
-# ----------------------------
-def _derive_tcga_anticorr(df: pd.DataFrame, tcga: str) -> pd.Series:
+# =============================================================================
+# TCGA derivation helpers
+# =============================================================================
+
+def _derive_tcga_support_flag(df: pd.DataFrame, tcga: str) -> pd.Series:
     """
-    Prefer explicit {TCGA}_anticorrelated if present.
-    Else derive as (rho < 0) & (p <= 0.05) when available.
-    Always returns int 0/1 aligned to df.index.
+    Returns int 0/1 aligned to df.index indicating TCGA anti-correlation support.
+
+    Priority:
+      1) {TCGA}_support_tcga (explicit evidence line)
+      2) {TCGA}_anticorrelated (raw boolean)
+      3) derive from rho/p: (rho < 0) & (p <= 0.05) if both exist
+      4) else zeros
     """
     tcga = str(tcga).upper()
+
+    support_col = f"{tcga}_support_tcga"
+    if support_col in df.columns:
+        return _bool_col(df, support_col)
+
     antic_col = f"{tcga}_anticorrelated"
     if antic_col in df.columns:
         return _bool_col(df, antic_col)
@@ -272,9 +412,12 @@ def _derive_tcga_anticorr(df: pd.DataFrame, tcga: str) -> pd.Series:
         p = _safe_float_col(df, p_col, default=1.0)
         return ((rho < 0) & (p <= 0.05)).astype(int)
 
-    # no info
     return pd.Series(np.zeros(len(df), dtype=int), index=df.index)
 
+
+# =============================================================================
+# Main retrieval
+# =============================================================================
 
 def retrieve_candidates(
     ev: pd.DataFrame,
@@ -311,7 +454,7 @@ def retrieve_candidates(
         )
 
     if cfg.require_expression and cfg.tcga:
-        pair_expr = f"{cfg.tcga}_pair_expressed"
+        pair_expr = f"{str(cfg.tcga).upper()}_pair_expressed"
         if pair_expr in df.columns:
             mask &= (_bool_col(df, pair_expr) == 1)
 
@@ -326,7 +469,8 @@ def retrieve_candidates(
         matched_tokens = allowed
         if not allowed:
             return df.head(0), direction
-        df = df[df["mirna_name"].astype(str).str.lower().isin([a.lower() for a in allowed])].copy()
+        allowed_l = {a.lower() for a in allowed}
+        df = df[df["mirna_name"].astype(str).str.lower().isin(allowed_l)].copy()
     else:
         df = df[df["gene_symbol"].astype(str).str.upper() == query_token.upper()].copy()
         matched_tokens = [query_token]
@@ -334,13 +478,13 @@ def retrieve_candidates(
     if df.empty:
         return df.head(0), direction
 
-    # --- Collapse duplicates so each gene appears once ---
+    # --- Collapse duplicates so each (miRNA,gene) appears once ---
     if cfg.collapse_duplicates:
         df = _collapse_pair_rows(df)
         if df.empty:
             return df.head(0), direction
 
-    # --- Scoring ---
+    # --- Base scoring components ---
     support = _safe_float_col(df, "support_count", default=0.0)
 
     ts_ctx = _safe_float_col(df, "ts_best_contextpp", default=0.0)
@@ -354,7 +498,7 @@ def retrieve_candidates(
 
     # --- TCGA: treat anti-correlation as its own evidence line ---
     tcga_rho_strength = pd.Series(np.zeros(len(df), dtype=float), index=df.index)
-    tcga_anticorr_flag = pd.Series(np.zeros(len(df), dtype=int), index=df.index)
+    tcga_support_flag = pd.Series(np.zeros(len(df), dtype=int), index=df.index)
     tcga_repression_flag = pd.Series(np.zeros(len(df), dtype=int), index=df.index)
     tcga_p = pd.Series(np.full(len(df), np.nan, dtype=float), index=df.index)
 
@@ -371,18 +515,22 @@ def retrieve_candidates(
         if p_col in df.columns:
             tcga_p = _safe_float_col(df, p_col, default=np.nan)
 
-        tcga_anticorr_flag = _derive_tcga_anticorr(df, tcga)
+        tcga_support_flag = _derive_tcga_support_flag(df, tcga)
 
         if rep_col in df.columns:
             tcga_repression_flag = _bool_col(df, rep_col)
 
     # Combine TCGA contributions:
-    # - strength from rho (continuous)
-    # - separate binary evidence from anticorr_flag
-    # - optional extra if repression_evidence is set
-    tcga_contrib = (1.0 * tcga_rho_strength) + (0.8 * tcga_anticorr_flag.astype(float)) + (0.3 * tcga_repression_flag.astype(float))
+    # - rho strength (continuous)
+    # - tcga_support_flag (binary evidence line)
+    # - repression evidence (optional extra flag)
+    tcga_contrib = (
+        (1.0 * tcga_rho_strength)
+        + (0.8 * tcga_support_flag.astype(float))
+        + (0.3 * tcga_repression_flag.astype(float))
+    )
 
-    # Pathway bonus (optional)
+    # --- Pathway bonus (optional) ---
     pathway_bonus = pd.Series(np.zeros(len(df), dtype=float), index=df.index)
     pf = cfg.pathway_filter or {}
     enabled = bool(pf.get("enabled", False))
@@ -392,6 +540,7 @@ def retrieve_candidates(
     if enabled and (cfg.pathway_keywords or cfg.phenotype_keywords):
         if "gene_pathway_hits" in df.columns:
             hits_i = _safe_int_col(df, "gene_pathway_hits", default=0)
+
             if mode == "filter":
                 df = df.loc[hits_i >= min_gene_sets].copy()
                 if df.empty:
@@ -406,9 +555,8 @@ def retrieve_candidates(
                 mirdb_best = _safe_float_col(df, "mirdb_best_score", default=0.0)
                 mirdb_contrib = (mirdb_best / 100.0)
 
-                # re-derive TCGA after filter
                 tcga_rho_strength = pd.Series(np.zeros(len(df), dtype=float), index=df.index)
-                tcga_anticorr_flag = pd.Series(np.zeros(len(df), dtype=int), index=df.index)
+                tcga_support_flag = pd.Series(np.zeros(len(df), dtype=int), index=df.index)
                 tcga_repression_flag = pd.Series(np.zeros(len(df), dtype=int), index=df.index)
                 tcga_p = pd.Series(np.full(len(df), np.nan, dtype=float), index=df.index)
 
@@ -417,21 +565,29 @@ def retrieve_candidates(
                     rho_col = f"{tcga}_spearman_rho"
                     p_col = f"{tcga}_spearman_p"
                     rep_col = f"{tcga}_repression_evidence"
+
                     if rho_col in df.columns:
                         rho = _safe_float_col(df, rho_col, default=0.0)
                         tcga_rho_strength = np.clip(-rho, 0, 1.0)
                     if p_col in df.columns:
                         tcga_p = _safe_float_col(df, p_col, default=np.nan)
-                    tcga_anticorr_flag = _derive_tcga_anticorr(df, tcga)
+
+                    tcga_support_flag = _derive_tcga_support_flag(df, tcga)
+
                     if rep_col in df.columns:
                         tcga_repression_flag = _bool_col(df, rep_col)
 
-                tcga_contrib = (1.0 * tcga_rho_strength) + (0.8 * tcga_anticorr_flag.astype(float)) + (0.3 * tcga_repression_flag.astype(float))
+                tcga_contrib = (
+                    (1.0 * tcga_rho_strength)
+                    + (0.8 * tcga_support_flag.astype(float))
+                    + (0.3 * tcga_repression_flag.astype(float))
+                )
 
                 hits_i = _safe_int_col(df, "gene_pathway_hits", default=0)
 
             pathway_bonus = np.clip(hits_i.astype(float) / 5.0, 0, 1.0)
 
+    # --- Final score ---
     score = (
         1.0 * support
         + 1.0 * ts_contrib
@@ -449,7 +605,7 @@ def retrieve_candidates(
         retrieval_mirdb_contrib=mirdb_contrib,
         retrieval_tcga_contrib=tcga_contrib,
         retrieval_tcga_rho_strength=tcga_rho_strength,
-        retrieval_tcga_anticorr_flag=tcga_anticorr_flag,
+        retrieval_tcga_support_flag=tcga_support_flag,
         retrieval_tcga_repression_flag=tcga_repression_flag,
         retrieval_tcga_p=tcga_p,
         retrieval_pathway_bonus=pathway_bonus,
@@ -494,3 +650,4 @@ def retrieve_from_queryspec(ev: pd.DataFrame, queryspec: Dict[str, Any]) -> Tupl
     )
 
     return retrieve_candidates(ev, str(token), cfg)
+
