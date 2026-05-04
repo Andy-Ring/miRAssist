@@ -6,18 +6,25 @@ import requests
 import streamlit as st
 
 
-#-----------------------------
+# -----------------------------
+# Page config
+# -----------------------------
+st.set_page_config(page_title="miRAssist", layout="wide")
+
+
+# -----------------------------
 # Logo
-#-----------------------------
+# -----------------------------
 with st.sidebar:
     st.image(
         "assets/miRAssist_logo.png",
         use_container_width=True
     )
 
-#-----------------------------
+
+# -----------------------------
 # Styling
-#-----------------------------
+# -----------------------------
 st.markdown(
     """
     <style>
@@ -56,11 +63,11 @@ st.markdown(
 )
 
 
-#----------------------------
+# ----------------------------
 # Dev Info
-#----------------------------
+# ----------------------------
 APP_NAME = "miRAssist"
-APP_VERSION = "0.5.1"
+APP_VERSION = "0.6.0"
 APP_AUTHOR = "Andy Ring"
 
 
@@ -75,63 +82,280 @@ def normalize_base_url(u: str) -> str:
 
 
 def safe_request_json(method: str, url: str, timeout=30, **kwargs):
+    """
+    Return JSON from a backend request with useful error messages.
+    """
     r = requests.request(method, url, timeout=timeout, **kwargs)
+
     ct = (r.headers.get("content-type") or "").lower()
+
     if "application/json" not in ct:
         raise RuntimeError(
             f"Non-JSON response from {url}\n"
             f"status={r.status_code} content-type={ct}\n"
-            f"text_head={r.text[:500]}"
+            f"text_head={r.text[:1000]}"
         )
-    return r.json()
+
+    try:
+        data = r.json()
+    except Exception as e:
+        raise RuntimeError(
+            f"Could not parse JSON response from {url}\n"
+            f"status={r.status_code}\n"
+            f"text_head={r.text[:1000]}\n"
+            f"error={e}"
+        )
+
+    if r.status_code >= 400:
+        raise RuntimeError(
+            f"Backend request failed: {method} {url}\n"
+            f"status={r.status_code}\n"
+            f"response={json.dumps(data, indent=2)[:4000]}"
+        )
+
+    return data
 
 
-def pick_summary_markdown(answer_obj) -> str | None:
+def is_terminal_status(status_json: dict) -> bool:
     """
-    Return the best markdown string to display, handling multiple backend schemas.
+    Backend can temporarily return:
+      status='unknown', stage='synthesis'
+
+    That should NOT be considered terminal. Only these statuses are terminal.
+    """
+    status = status_json.get("status", "unknown")
+    stage = status_json.get("stage")
+
+    if status in {"done", "error", "failed", "not_found"}:
+        return True
+
+    # Defensive: if the backend returns unknown while actively in a known stage,
+    # keep polling instead of fetching result too early.
+    if status == "unknown" and stage in {
+        "queued",
+        "planner",
+        "planning",
+        "retrieval",
+        "retrieve",
+        "shortlist",
+        "synthesis",
+        "synthesizing",
+        "generation",
+        "generating",
+    }:
+        return False
+
+    if status in {"queued", "running"}:
+        return False
+
+    # Unknown status with no useful stage: keep polling for a bit rather than
+    # immediately treating it as terminal.
+    return False
+
+
+def status_display_text(status_json: dict) -> str:
+    status = status_json.get("status", "unknown")
+    stage = status_json.get("stage")
+
+    bits = [f"Status: **{status}**"]
+    if stage:
+        bits.append(f"stage: **{stage}**")
+
+    ranking_mode = status_json.get("ranking_mode")
+    if ranking_mode:
+        bits.append(f"ranking: **{ranking_mode}**")
+
+    structure_alpha = status_json.get("structure_alpha")
+    if structure_alpha is not None:
+        bits.append(f"structure α: **{structure_alpha}**")
+
+    return " • ".join(bits)
+
+
+def progress_from_status(status_json: dict, elapsed: float, max_wait_seconds: int) -> float:
+    """
+    Approximate progress. This is intentionally stage-based, not exact.
+    """
+    status = status_json.get("status", "unknown")
+    stage = status_json.get("stage")
+
+    if status == "done":
+        return 1.0
+
+    stage_progress = {
+        "queued": 0.05,
+        "planner": 0.20,
+        "planning": 0.20,
+        "retrieval": 0.45,
+        "retrieve": 0.45,
+        "shortlist": 0.55,
+        "synthesis": 0.75,
+        "synthesizing": 0.75,
+        "generation": 0.80,
+        "generating": 0.80,
+    }
+
+    if stage in stage_progress:
+        base = stage_progress[stage]
+    elif status == "queued":
+        base = 0.05
+    elif status == "running":
+        base = 0.35
+    else:
+        base = 0.15
+
+    time_component = min(0.20, elapsed / max(1, max_wait_seconds) * 0.20)
+    return min(0.99, base + time_component)
+
+
+def extract_queryspec(result: dict) -> dict:
+    """
+    Support old and new backend schemas.
+    """
+    for key in ["queryspec", "query_spec", "planner", "planner_output", "querySpec"]:
+        value = result.get(key)
+        if isinstance(value, dict):
+            return value
+    return {}
+
+
+def extract_answer_obj(result: dict):
+    """
+    Support old and new backend schemas.
+    """
+    for key in ["answer", "final_answer", "response", "synthesis", "llm_answer"]:
+        value = result.get(key)
+        if value:
+            return value
+    return None
+
+
+def pick_summary_markdown_from_answer(answer_obj) -> str | None:
+    """
+    Return the best markdown string to display from an answer object.
 
     Supported shapes:
-      1) answer is a string -> markdown
+      1) answer is a string
       2) answer = {"summary": "...", "raw_text": "..."}
       3) answer = {"raw_text": {"summary": "...", "raw_text": "..."}}
-      4) answer = {"raw_text": {"raw_text": {"summary": "...", ...}}}  (rare/double-wrap)
+      4) answer = {"raw_text": {"raw_text": {"summary": "...", ...}}}
     """
     if answer_obj is None:
         return None
 
     if isinstance(answer_obj, str) and answer_obj.strip():
-        return answer_obj
+        return answer_obj.strip()
 
     if not isinstance(answer_obj, dict):
         return None
 
-    s = answer_obj.get("summary")
-    if isinstance(s, str) and s.strip():
-        return s
+    for key in [
+        "summary",
+        "answer",
+        "final_answer",
+        "response",
+        "text",
+        "synthesis",
+        "recommendation",
+        "markdown",
+    ]:
+        value = answer_obj.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
 
     rt = answer_obj.get("raw_text")
 
     if isinstance(rt, str) and rt.strip():
-        return rt
+        return rt.strip()
 
     if isinstance(rt, dict):
-        s2 = rt.get("summary")
-        if isinstance(s2, str) and s2.strip():
-            return s2
+        for key in [
+            "summary",
+            "answer",
+            "final_answer",
+            "response",
+            "text",
+            "synthesis",
+            "recommendation",
+            "markdown",
+        ]:
+            value = rt.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
 
         rt2 = rt.get("raw_text")
+
         if isinstance(rt2, str) and rt2.strip():
-            return rt2
+            return rt2.strip()
 
         if isinstance(rt2, dict):
-            s3 = rt2.get("summary")
-            if isinstance(s3, str) and s3.strip():
-                return s3
-            rt3 = rt2.get("raw_text")
-            if isinstance(rt3, str) and rt3.strip():
-                return rt3
+            for key in [
+                "summary",
+                "answer",
+                "final_answer",
+                "response",
+                "text",
+                "synthesis",
+                "recommendation",
+                "markdown",
+            ]:
+                value = rt2.get(key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
 
     return None
+
+
+def pick_summary_markdown(result: dict) -> str | None:
+    """
+    First check top-level result fields, then nested answer-like fields.
+    """
+    if not isinstance(result, dict):
+        return None
+
+    for key in [
+        "summary",
+        "answer_text",
+        "final_answer",
+        "response",
+        "text",
+        "synthesis",
+        "llm_answer",
+        "recommendation",
+        "markdown",
+    ]:
+        value = result.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    answer_obj = extract_answer_obj(result)
+    return pick_summary_markdown_from_answer(answer_obj)
+
+
+def pick_suggested_experiments(result: dict) -> list:
+    """
+    Support optional suggested experiments if the backend provides them.
+    """
+    keys = [
+        "suggested_experiments",
+        "experiments",
+        "validation_experiments",
+        "recommended_experiments",
+    ]
+
+    for key in keys:
+        value = result.get(key)
+        if isinstance(value, list):
+            return value
+
+    answer_obj = extract_answer_obj(result)
+    if isinstance(answer_obj, dict):
+        for key in keys:
+            value = answer_obj.get(key)
+            if isinstance(value, list):
+                return value
+
+    return []
 
 
 def typewriter_markdown(md: str, container, cps: int = 60, chunk: str = "word"):
@@ -214,8 +438,15 @@ with st.sidebar:
         clear = st.button("Clear")
 
     if clear:
-        for k2 in ["last_result", "last_query_id", "last_error"]:
+        for k2 in [
+            "last_result",
+            "last_query_id",
+            "last_error",
+            "last_status",
+            "last_submit_response",
+        ]:
             st.session_state.pop(k2, None)
+        st.rerun()
 
     if ping:
         if not api_url:
@@ -223,9 +454,11 @@ with st.sidebar:
         else:
             try:
                 out = safe_request_json("GET", f"{api_url}/health", timeout=10)
-                st.success(f"OK: {out}")
+                st.success("Backend reachable.")
+                st.json(out)
             except Exception as e:
                 st.error(str(e))
+
     sidebar_footer(APP_AUTHOR, APP_VERSION)
 
 
@@ -275,7 +508,7 @@ with c4:
     require_binding = st.checkbox(
         "Require binding evidence (override)",
         value=False,
-        help="If enabled, only keep pairs with binding-type evidence (e.g., CLIP/TargetScan/miRDB).",
+        help="If enabled, only keep pairs with binding-type evidence, e.g. CLIP/TargetScan/miRDB.",
     )
 with c5:
     require_expression = st.checkbox(
@@ -297,12 +530,15 @@ with c6:
 
 run = st.button("Run miRAssist", type="primary", disabled=(not api_url or not question.strip()))
 
+
 # ----------------------------
 # Run + poll
 # ----------------------------
 if run:
     st.session_state.pop("last_result", None)
     st.session_state.pop("last_error", None)
+    st.session_state.pop("last_status", None)
+    st.session_state.pop("last_submit_response", None)
 
     try:
         submit_payload = {
@@ -315,8 +551,21 @@ if run:
             "pathway_mode": str(pathway_mode),
         }
 
-        resp = safe_request_json("POST", f"{api_url}/query", json=submit_payload, timeout=30)
-        query_id = resp["query_id"]
+        resp = safe_request_json(
+            "POST",
+            f"{api_url}/query",
+            json=submit_payload,
+            timeout=60,
+        )
+        st.session_state["last_submit_response"] = resp
+
+        query_id = resp.get("query_id") or resp.get("job_id") or resp.get("id")
+        if not query_id:
+            raise RuntimeError(
+                "Backend did not return a query_id/job_id/id.\n"
+                f"Response: {json.dumps(resp, indent=2)[:4000]}"
+            )
+
         st.session_state["last_query_id"] = query_id
         st.info(f"Submitted: `{query_id}`")
 
@@ -328,26 +577,61 @@ if run:
         t0 = time.time()
 
         with st.spinner("Running…"):
+            final_status_json = {}
+
             while True:
                 elapsed = time.time() - t0
+
                 if elapsed > max_wait_seconds:
                     raise TimeoutError("Timed out waiting for miRAssist to finish.")
 
-                s = safe_request_json("GET", f"{api_url}/status/{query_id}", timeout=30)
-                status = s.get("status", "unknown")
-                status_box.info(f"Status: **{status}** • elapsed: {int(elapsed)}s")
-                progress.progress(min(0.99, (elapsed % 60) / 60))
+                s = safe_request_json(
+                    "GET",
+                    f"{api_url}/status/{query_id}",
+                    timeout=30,
+                )
+                st.session_state["last_status"] = s
+                final_status_json = s
 
-                if status not in ("queued", "running"):
+                progress.progress(progress_from_status(s, elapsed, max_wait_seconds))
+                status_box.info(
+                    f"{status_display_text(s)} • elapsed: **{int(elapsed)}s**"
+                )
+
+                if is_terminal_status(s):
                     break
 
                 time.sleep(poll_every)
 
-        result = safe_request_json("GET", f"{api_url}/result/{query_id}", timeout=600)
+        status = final_status_json.get("status", "unknown")
+
+        if status in {"error", "failed", "not_found"}:
+            # Fetch result too, because backend may include traceback/error details there.
+            try:
+                result = safe_request_json(
+                    "GET",
+                    f"{api_url}/result/{query_id}",
+                    timeout=60,
+                )
+                st.session_state["last_result"] = result
+            except Exception:
+                pass
+
+            err_msg = final_status_json.get("error") or f"Backend returned status: {status}"
+            raise RuntimeError(err_msg)
+
+        result = safe_request_json(
+            "GET",
+            f"{api_url}/result/{query_id}",
+            timeout=600,
+        )
+
         st.session_state["last_result"] = result
+        progress.progress(1.0)
 
     except Exception as e:
         st.session_state["last_error"] = str(e)
+
 
 # ----------------------------
 # Display results
@@ -356,19 +640,32 @@ err = st.session_state.get("last_error")
 if err:
     st.error(err)
 
+    with st.expander("Debug: last status", expanded=False):
+        st.json(st.session_state.get("last_status", {}))
+
+    with st.expander("Debug: submit response", expanded=False):
+        st.json(st.session_state.get("last_submit_response", {}))
+
+
 result = st.session_state.get("last_result")
 if result:
-    if result.get("status") == "error":
-        st.error(result.get("error", "Unknown error"))
+    result_status = result.get("status", "unknown")
+
+    if result_status in {"error", "failed", "not_found"}:
+        st.error(result.get("error", f"Backend returned status: {result_status}"))
+
         tb = result.get("traceback")
         if tb:
             with st.expander("Traceback"):
                 st.code(tb)
+
+        with st.expander("Debug: full result JSON", expanded=False):
+            st.json(result)
+
     else:
         st.markdown("## Answer")
 
-        ans_obj = result.get("answer")
-        summary_md = pick_summary_markdown(ans_obj)
+        summary_md = pick_summary_markdown(result)
 
         if summary_md:
             placeholder = st.empty()
@@ -384,16 +681,28 @@ if result:
         else:
             st.info("No summary text found in backend response.")
 
+        experiments = pick_suggested_experiments(result)
+        if experiments:
+            st.markdown("## Suggested experiments")
+            for exp in experiments:
+                st.markdown(f"- {exp}")
+
         with st.expander("Planner output (QuerySpec)", expanded=False):
-            st.json(result.get("queryspec", {}))
+            st.json(extract_queryspec(result))
 
         with st.expander("Evidence shortlist (optional)", expanded=False):
             shortlist = result.get("shortlist", [])
-            if shortlist:
+            if isinstance(shortlist, list) and len(shortlist) > 0:
                 df = pd.DataFrame(shortlist)
                 st.dataframe(df, use_container_width=True)
             else:
                 st.info("Shortlist is empty.")
 
         with st.expander("Debug: answer JSON", expanded=False):
-            st.json(result.get("answer", {}))
+            answer_obj = extract_answer_obj(result)
+            if answer_obj is None:
+                answer_obj = {}
+            st.json(answer_obj)
+
+        with st.expander("Debug: full result JSON", expanded=False):
+            st.json(result)
