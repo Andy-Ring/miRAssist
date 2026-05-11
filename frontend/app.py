@@ -67,7 +67,7 @@ st.markdown(
 # Dev Info
 # ----------------------------
 APP_NAME = "miRAssist"
-APP_VERSION = "0.6.0"
+APP_VERSION = "0.6.1"
 APP_AUTHOR = "Andy Ring"
 
 
@@ -208,15 +208,176 @@ def progress_from_status(status_json: dict, elapsed: float, max_wait_seconds: in
     return min(0.99, base + time_component)
 
 
+def _get_nested_dict(payload: dict, path: tuple) -> dict:
+    """
+    Safely retrieve a nested dictionary from a payload.
+
+    Example:
+        _get_nested_dict(result, ("debug", "queryspec"))
+    """
+    cur = payload
+
+    for key in path:
+        if not isinstance(cur, dict):
+            return {}
+
+        if key not in cur:
+            return {}
+
+        cur = cur.get(key)
+
+    if isinstance(cur, dict) and cur:
+        return cur
+
+    return {}
+
+
+def _get_nested_value(payload: dict, path: tuple):
+    """
+    Safely retrieve any nested value from a payload.
+    """
+    cur = payload
+
+    for key in path:
+        if not isinstance(cur, dict):
+            return None
+
+        if key not in cur:
+            return None
+
+        cur = cur.get(key)
+
+    return cur
+
+
 def extract_queryspec(result: dict) -> dict:
     """
     Support old and new backend schemas.
+
+    This is intentionally broad because the backend has used multiple shapes:
+      result["queryspec"]
+      result["query_spec"]
+      result["planner"]
+      result["planner_output"]
+      result["meta"]["queryspec"]
+      result["debug"]["queryspec"]
+      result["result"]["queryspec"]
+      result["answer"]["meta"]["queryspec"]
+      result["prompt_bundle"]["meta"]["queryspec"]
+
+    Returns the first non-empty dict it finds.
     """
-    for key in ["queryspec", "query_spec", "planner", "planner_output", "querySpec"]:
-        value = result.get(key)
-        if isinstance(value, dict):
+    if not isinstance(result, dict):
+        return {}
+
+    candidate_paths = [
+        ("queryspec",),
+        ("query_spec",),
+        ("querySpec",),
+        ("planner",),
+        ("planner_output",),
+        ("plannerOutput",),
+
+        ("meta", "queryspec"),
+        ("meta", "query_spec"),
+        ("meta", "planner"),
+        ("meta", "planner_output"),
+
+        ("debug", "queryspec"),
+        ("debug", "query_spec"),
+        ("debug", "planner"),
+        ("debug", "planner_output"),
+
+        ("result", "queryspec"),
+        ("result", "query_spec"),
+        ("result", "planner"),
+        ("result", "planner_output"),
+        ("result", "meta", "queryspec"),
+        ("result", "meta", "query_spec"),
+        ("result", "debug", "queryspec"),
+        ("result", "debug", "planner_output"),
+
+        ("answer", "queryspec"),
+        ("answer", "query_spec"),
+        ("answer", "planner"),
+        ("answer", "planner_output"),
+        ("answer", "meta", "queryspec"),
+        ("answer", "meta", "query_spec"),
+        ("answer", "debug", "queryspec"),
+        ("answer", "debug", "planner_output"),
+
+        ("final_answer", "queryspec"),
+        ("final_answer", "query_spec"),
+        ("final_answer", "meta", "queryspec"),
+
+        ("synthesis", "queryspec"),
+        ("synthesis", "query_spec"),
+        ("synthesis", "meta", "queryspec"),
+
+        ("prompt_bundle", "meta", "queryspec"),
+        ("prompt_bundle", "queryspec"),
+        ("prompt_meta", "queryspec"),
+        ("prompt_meta", "query_spec"),
+    ]
+
+    for path in candidate_paths:
+        value = _get_nested_dict(result, path)
+        if value:
             return value
+
     return {}
+
+
+def extract_planner_debug_candidates(result: dict) -> dict:
+    """
+    Return a diagnostic map of likely planner/queryspec locations.
+
+    This does not replace extract_queryspec(); it is for the Streamlit debug panel
+    so that if the primary planner output is {}, you can see where the backend
+    is actually putting related objects.
+    """
+    if not isinstance(result, dict):
+        return {}
+
+    candidate_paths = [
+        ("queryspec",),
+        ("query_spec",),
+        ("querySpec",),
+        ("planner",),
+        ("planner_output",),
+        ("plannerOutput",),
+        ("meta",),
+        ("meta", "queryspec"),
+        ("meta", "query_spec"),
+        ("meta", "planner"),
+        ("meta", "planner_output"),
+        ("debug",),
+        ("debug", "queryspec"),
+        ("debug", "query_spec"),
+        ("debug", "planner"),
+        ("debug", "planner_output"),
+        ("result",),
+        ("result", "queryspec"),
+        ("result", "meta"),
+        ("result", "meta", "queryspec"),
+        ("answer",),
+        ("answer", "meta"),
+        ("answer", "meta", "queryspec"),
+        ("prompt_bundle",),
+        ("prompt_bundle", "meta"),
+        ("prompt_bundle", "meta", "queryspec"),
+        ("prompt_meta",),
+        ("prompt_meta", "queryspec"),
+    ]
+
+    found = {}
+
+    for path in candidate_paths:
+        value = _get_nested_value(result, path)
+        if value not in (None, {}, [], ""):
+            found[".".join(path)] = value
+
+    return found
 
 
 def extract_answer_obj(result: dict):
@@ -335,6 +496,9 @@ def pick_summary_markdown(result: dict) -> str | None:
 def pick_suggested_experiments(result: dict) -> list:
     """
     Support optional suggested experiments if the backend provides them.
+
+    This is preserved for backward compatibility, but the current miRAssist
+    prompting strategy should normally not return experimental recommendations.
     """
     keys = [
         "suggested_experiments",
@@ -681,6 +845,8 @@ if result:
         else:
             st.info("No summary text found in backend response.")
 
+        # Preserved for backward compatibility, but the updated prompting.py
+        # should normally avoid returning experimental recommendations.
         experiments = pick_suggested_experiments(result)
         if experiments:
             st.markdown("## Suggested experiments")
@@ -688,7 +854,29 @@ if result:
                 st.markdown(f"- {exp}")
 
         with st.expander("Planner output (QuerySpec)", expanded=False):
-            st.json(extract_queryspec(result))
+            queryspec = extract_queryspec(result)
+
+            if queryspec:
+                st.json(queryspec)
+            else:
+                st.warning(
+                    "No planner/queryspec object was found at the expected response paths."
+                )
+                st.caption(
+                    "This usually means either the backend did not include planner output "
+                    "in /result/{query_id}, or it is stored under a response key not yet handled."
+                )
+
+                debug_candidates = extract_planner_debug_candidates(result)
+
+                if debug_candidates:
+                    st.markdown("#### Planner-like/debug objects found")
+                    st.json(debug_candidates)
+                else:
+                    st.info("No planner-like debug objects were found in the result payload.")
+
+                st.markdown("#### Full result JSON")
+                st.json(result)
 
         with st.expander("Evidence shortlist (optional)", expanded=False):
             shortlist = result.get("shortlist", [])
@@ -703,6 +891,12 @@ if result:
             if answer_obj is None:
                 answer_obj = {}
             st.json(answer_obj)
+
+        with st.expander("Debug: submit response", expanded=False):
+            st.json(st.session_state.get("last_submit_response", {}))
+
+        with st.expander("Debug: last status", expanded=False):
+            st.json(st.session_state.get("last_status", {}))
 
         with st.expander("Debug: full result JSON", expanded=False):
             st.json(result)
