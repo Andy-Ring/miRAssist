@@ -1,8 +1,14 @@
+from pathlib import Path
+import sys
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 import json
 import os
 import time
 import uuid
-from pathlib import Path
 
 import pandas as pd
 import requests
@@ -24,7 +30,6 @@ from backend.worker import run_query_job
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent
-REPO_ROOT = FRONTEND_DIR.parent
 
 
 def load_local_dotenv() -> None:

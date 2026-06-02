@@ -35,6 +35,10 @@ Posit should run the app with:
 streamlit run app.py
 ```
 
+Preferred Posit entrypoint: `app.py`.
+
+Do not set the primary file to `frontend/app.py` unless necessary. If Posit is already configured to launch `frontend/app.py`, the app now bootstraps the repository root onto `sys.path` so sibling imports like `backend.config` still work.
+
 The repo includes a root [requirements.txt](C:\Users\andym\OneDrive - University of Georgia\Documents\miRAssist\requirements.txt) for the hosted Streamlit path and intentionally avoids heavy local inference dependencies like `torch`.
 
 ## Local direct mode
@@ -172,6 +176,12 @@ Basic direct-mode import smoke:
 
 ```bash
 python scripts/smoke_test_direct_mode_imports.py
+```
+
+Import-path smoke:
+
+```bash
+python scripts/smoke_test_import_paths.py
 ```
 
 OpenAI backend smoke:
