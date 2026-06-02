@@ -1,15 +1,30 @@
-import os
 from typing import Optional
 
 import requests
 
+from backend.config import (
+    get_llm_backend,
+    get_model_name,
+    get_openai_api_key,
+    get_openai_base_url,
+    get_openai_timeout,
+    get_vllm_http_url,
+)
 
-def _chat_transformers(system: str, user: str, max_new_tokens: int, temperature: float, top_p: float) -> str:
+
+def _chat_transformers(
+    system: str,
+    user: str,
+    model: Optional[str],
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> str:
     # Lazy import so environments without transformers still work
     from transformers import AutoTokenizer, AutoModelForCausalLM  # type: ignore
     import torch  # type: ignore
 
-    model_name = os.environ.get("MIRASSIST_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct")
+    model_name = model or get_model_name()
     tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
@@ -42,14 +57,22 @@ def _chat_transformers(system: str, user: str, max_new_tokens: int, temperature:
     return text.strip()
 
 
-def _chat_vllm_http(system: str, user: str, max_new_tokens: int, temperature: float, top_p: float) -> str:
-    url = os.environ.get("MIRASSIST_VLLM_HTTP_URL", "").rstrip("/")
+def _chat_vllm_http(
+    system: str,
+    user: str,
+    model: Optional[str],
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> str:
+    url = (get_vllm_http_url() or "").rstrip("/")
     if not url:
         raise RuntimeError("MIRASSIST_VLLM_HTTP_URL is not set for vllm_http backend.")
 
     payload = {
         "system": system,
         "user": user,
+        "model": model or get_model_name(),
         "max_new_tokens": int(max_new_tokens),
         "temperature": float(temperature),
         "top_p": float(top_p),
@@ -60,22 +83,90 @@ def _chat_vllm_http(system: str, user: str, max_new_tokens: int, temperature: fl
     return (obj.get("text") or "").strip()
 
 
+def _chat_openai(
+    system: str,
+    user: str,
+    model: Optional[str],
+    max_new_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> str:
+    api_key = get_openai_api_key()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY is not set for openai backend.")
+
+    try:
+        from openai import OpenAI
+    except ImportError as exc:
+        raise RuntimeError(
+            "The openai package is not installed. Add it to the backend environment first."
+        ) from exc
+
+    client_kwargs = {
+        "api_key": api_key,
+        "timeout": get_openai_timeout(),
+    }
+    base_url = get_openai_base_url()
+    if base_url:
+        client_kwargs["base_url"] = base_url
+
+    client = OpenAI(**client_kwargs)
+
+    try:
+        completion = client.chat.completions.create(
+            model=model or get_model_name(),
+            messages=[
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            max_completion_tokens=int(max_new_tokens),
+            temperature=float(temperature),
+            top_p=float(top_p),
+        )
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI chat completion failed: {exc}") from exc
+
+    choice = completion.choices[0] if completion.choices else None
+    if choice is None or choice.message is None:
+        raise RuntimeError("OpenAI chat completion returned no choices.")
+
+    content = getattr(choice.message, "content", None)
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            text = getattr(item, "text", None)
+            if text is None and isinstance(item, dict):
+                text = item.get("text")
+            if text:
+                parts.append(text)
+        joined = "".join(parts).strip()
+        if joined:
+            return joined
+
+    raise RuntimeError("OpenAI chat completion returned an empty message content.")
+
+
 def chat(
     *,
     system: str,
     user: str,
+    model: Optional[str] = None,
     max_new_tokens: int = 600,
     temperature: float = 0.2,
     top_p: float = 0.95,
 ) -> str:
-    backend = (os.environ.get("MIRASSIST_LLM_BACKEND", "transformers") or "").strip().lower()
+    backend = get_llm_backend()
     if backend == "transformers":
-        return _chat_transformers(system, user, max_new_tokens, temperature, top_p)
+        return _chat_transformers(system, user, model, max_new_tokens, temperature, top_p)
     if backend == "vllm_http":
-        return _chat_vllm_http(system, user, max_new_tokens, temperature, top_p)
+        return _chat_vllm_http(system, user, model, max_new_tokens, temperature, top_p)
+    if backend == "openai":
+        return _chat_openai(system, user, model, max_new_tokens, temperature, top_p)
 
     raise ValueError(
-        f"Unknown MIRASSIST_LLM_BACKEND='{backend}'. Expected 'transformers' or 'vllm_http'."
+        f"Unknown MIRASSIST_LLM_BACKEND='{backend}'. Expected 'transformers', 'vllm_http', or 'openai'."
     )
 
 
@@ -111,6 +202,7 @@ def generate_answer(
     return chat(
         system=system_prompt,
         user=user_prompt,
+        model=None,
         max_new_tokens=max_new_tokens,
         temperature=temperature,
         top_p=top_p,

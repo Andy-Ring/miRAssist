@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
+from backend.config import get_planner_model, get_planner_temperature
 from backend.llm_backend import chat
 
 
@@ -144,8 +145,9 @@ def run_planner(question: str) -> Dict[str, Any]:
     response = chat(
         system=PLANNER_SYSTEM_PROMPT,
         user=f"User question:\n{question}\n\nReturn JSON QuerySpec only.",
+        model=get_planner_model(),
         max_new_tokens=700,
-        temperature=0.0,
+        temperature=get_planner_temperature(),
         top_p=1.0,
     )
 

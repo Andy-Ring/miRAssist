@@ -3,17 +3,19 @@ from __future__ import annotations
 
 from typing import Dict, Any
 
+from backend.config import get_synth_model, get_synth_temperature
 from backend.llm_backend import chat
 from backend.prompting import SYSTEM_PROMPT
 
 
 def run_synthesizer(bundle: Dict[str, Any], model: str = None) -> Dict[str, Any]:
-    # model is ignored here; MODEL_NAME is configured in backend/config.py.
+    selected_model = model or get_synth_model()
     out = chat(
         system=bundle.get("system_prompt", SYSTEM_PROMPT),
         user=bundle["user_prompt"],
+        model=selected_model,
         max_new_tokens=1200,
-        temperature=0.2,
+        temperature=get_synth_temperature(),
         top_p=0.95,
     )
 
@@ -22,4 +24,3 @@ def run_synthesizer(bundle: Dict[str, Any], model: str = None) -> Dict[str, Any]
         "summary": out,
         "suggested_experiments": [],
     }
-

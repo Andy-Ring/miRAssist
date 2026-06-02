@@ -10,13 +10,50 @@ import re
 import numpy as np
 import pandas as pd
 
+from backend.config import get_evidence_backend, get_evidence_table, resolve_evidence_path
+from backend.db import get_database_engine, quote_identifier
+
 
 # =============================================================================
 # Evidence loading (Colab-friendly)
 # =============================================================================
 
 _EVIDENCE_CACHE: Optional[pd.DataFrame] = None
-_EVIDENCE_PATH: Optional[str] = None
+_EVIDENCE_SOURCE: Optional[str] = None
+
+
+def _load_evidence_parquet(
+    evidence_path: str | None = None,
+    columns: list[str] | None = None,
+) -> pd.DataFrame:
+    resolved_path = str(resolve_evidence_path(evidence_path))
+    if columns:
+        return pd.read_parquet(resolved_path, columns=columns)
+    return pd.read_parquet(resolved_path)
+
+
+def _load_evidence_postgres(
+    table_name: str,
+    columns: list[str] | None = None,
+) -> pd.DataFrame:
+    engine = get_database_engine()
+    if engine is None:
+        raise RuntimeError("DATABASE_URL is not configured for postgres evidence loading.")
+
+    quoted_table = quote_identifier(table_name)
+    if columns:
+        quoted_columns = ", ".join(quote_identifier(col) for col in columns)
+    else:
+        quoted_columns = "*"
+
+    query = f"SELECT {quoted_columns} FROM {quoted_table}"
+    try:
+        return pd.read_sql_query(query, engine)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to load postgres evidence table '{table_name}'. "
+            "Check EVIDENCE_TABLE, DATABASE_URL, and that the table/schema exists."
+        ) from exc
 
 
 def load_evidence(
@@ -37,36 +74,33 @@ def load_evidence(
       - Drops duplicate column labels if present.
       - Designed for single-process Colab/uvicorn usage.
     """
-    global _EVIDENCE_CACHE, _EVIDENCE_PATH
+    global _EVIDENCE_CACHE, _EVIDENCE_SOURCE
 
-    if evidence_path is None:
-        evidence_path = os.environ.get("MIASSIST_EVIDENCE")
-        if evidence_path is None:
-            base = os.environ.get("MIASSIST_BASE")
-            if base:
-                evidence_path = str(
-                    Path(base) / "data" / "processed" / "evidence_pairs_tcga.parquet"
-                )
-            else:
-                evidence_path = "data/processed/evidence_pairs_tcga.parquet"
-
-    evidence_path = str(Path(evidence_path).expanduser())
+    backend_name = get_evidence_backend()
+    source = ""
+    if backend_name == "postgres":
+        source = f"postgres:{get_evidence_table()}"
+    else:
+        source = str(resolve_evidence_path(evidence_path))
 
     if (
         not force_reload
         and _EVIDENCE_CACHE is not None
-        and _EVIDENCE_PATH == evidence_path
+        and _EVIDENCE_SOURCE == source
     ):
         return _EVIDENCE_CACHE
 
-    df = pd.read_parquet(evidence_path, columns=columns) if columns else pd.read_parquet(evidence_path)
+    if backend_name == "postgres":
+        df = _load_evidence_postgres(get_evidence_table(), columns=columns)
+    else:
+        df = _load_evidence_parquet(evidence_path, columns=columns)
 
     # Safety: remove duplicate column labels (can happen after merges)
     if df.columns.duplicated().any():
         df = df.loc[:, ~df.columns.duplicated()].copy()
 
     _EVIDENCE_CACHE = df
-    _EVIDENCE_PATH = evidence_path
+    _EVIDENCE_SOURCE = source
     return df
 
 
@@ -650,4 +684,3 @@ def retrieve_from_queryspec(ev: pd.DataFrame, queryspec: Dict[str, Any]) -> Tupl
     )
 
     return retrieve_candidates(ev, str(token), cfg)
-

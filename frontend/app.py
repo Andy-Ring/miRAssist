@@ -1,30 +1,67 @@
 import json
+import os
 import time
+import uuid
+from pathlib import Path
 
 import pandas as pd
 import requests
 import streamlit as st
 
+from backend.config import (
+    database_configured,
+    get_app_mode,
+    get_evidence_backend,
+    get_jobstore_backend,
+    get_llm_backend,
+    get_planner_model,
+    get_synth_model,
+    openai_configured,
+    resolve_backend_url,
+)
+from backend.jobstore import read_job
+from backend.worker import run_query_job
 
-# -----------------------------
-# Page config
-# -----------------------------
+
+FRONTEND_DIR = Path(__file__).resolve().parent
+REPO_ROOT = FRONTEND_DIR.parent
+
+
+def load_local_dotenv() -> None:
+    dotenv_path = REPO_ROOT / ".env"
+    if not dotenv_path.exists():
+        return
+
+    for raw_line in dotenv_path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+
+        os.environ.setdefault(key, value)
+
+
+load_local_dotenv()
+
+APP_MODE = get_app_mode()
+DEFAULT_BACKEND_URL = resolve_backend_url()
+
+
 st.set_page_config(page_title="miRAssist", layout="wide")
 
-
-# -----------------------------
-# Logo
-# -----------------------------
 with st.sidebar:
     st.image(
-        "assets/miRAssist_logo.png",
-        use_container_width=True
+        str(FRONTEND_DIR / "assets" / "miRAssist_logo.png"),
+        use_container_width=True,
     )
 
 
-# -----------------------------
-# Styling
-# -----------------------------
 st.markdown(
     """
     <style>
@@ -63,17 +100,11 @@ st.markdown(
 )
 
 
-# ----------------------------
-# Dev Info
-# ----------------------------
 APP_NAME = "miRAssist"
-APP_VERSION = "0.6.1"
+APP_VERSION = "0.7.0"
 APP_AUTHOR = "Andy Ring"
 
 
-# ----------------------------
-# Helpers
-# ----------------------------
 def normalize_base_url(u: str) -> str:
     u = (u or "").strip()
     if u.endswith("/"):
@@ -82,11 +113,7 @@ def normalize_base_url(u: str) -> str:
 
 
 def safe_request_json(method: str, url: str, timeout=30, **kwargs):
-    """
-    Return JSON from a backend request with useful error messages.
-    """
     r = requests.request(method, url, timeout=timeout, **kwargs)
-
     ct = (r.headers.get("content-type") or "").lower()
 
     if "application/json" not in ct:
@@ -117,20 +144,12 @@ def safe_request_json(method: str, url: str, timeout=30, **kwargs):
 
 
 def is_terminal_status(status_json: dict) -> bool:
-    """
-    Backend can temporarily return:
-      status='unknown', stage='synthesis'
-
-    That should NOT be considered terminal. Only these statuses are terminal.
-    """
     status = status_json.get("status", "unknown")
     stage = status_json.get("stage")
 
     if status in {"done", "error", "failed", "not_found"}:
         return True
 
-    # Defensive: if the backend returns unknown while actively in a known stage,
-    # keep polling instead of fetching result too early.
     if status == "unknown" and stage in {
         "queued",
         "planner",
@@ -148,8 +167,6 @@ def is_terminal_status(status_json: dict) -> bool:
     if status in {"queued", "running"}:
         return False
 
-    # Unknown status with no useful stage: keep polling for a bit rather than
-    # immediately treating it as terminal.
     return False
 
 
@@ -167,15 +184,12 @@ def status_display_text(status_json: dict) -> str:
 
     structure_alpha = status_json.get("structure_alpha")
     if structure_alpha is not None:
-        bits.append(f"structure α: **{structure_alpha}**")
+        bits.append(f"structure alpha: **{structure_alpha}**")
 
-    return " • ".join(bits)
+    return " | ".join(bits)
 
 
 def progress_from_status(status_json: dict, elapsed: float, max_wait_seconds: int) -> float:
-    """
-    Approximate progress. This is intentionally stage-based, not exact.
-    """
     status = status_json.get("status", "unknown")
     stage = status_json.get("stage")
 
@@ -209,64 +223,31 @@ def progress_from_status(status_json: dict, elapsed: float, max_wait_seconds: in
 
 
 def _get_nested_dict(payload: dict, path: tuple) -> dict:
-    """
-    Safely retrieve a nested dictionary from a payload.
-
-    Example:
-        _get_nested_dict(result, ("debug", "queryspec"))
-    """
     cur = payload
-
     for key in path:
         if not isinstance(cur, dict):
             return {}
-
         if key not in cur:
             return {}
-
         cur = cur.get(key)
 
     if isinstance(cur, dict) and cur:
         return cur
-
     return {}
 
 
 def _get_nested_value(payload: dict, path: tuple):
-    """
-    Safely retrieve any nested value from a payload.
-    """
     cur = payload
-
     for key in path:
         if not isinstance(cur, dict):
             return None
-
         if key not in cur:
             return None
-
         cur = cur.get(key)
-
     return cur
 
 
 def extract_queryspec(result: dict) -> dict:
-    """
-    Support old and new backend schemas.
-
-    This is intentionally broad because the backend has used multiple shapes:
-      result["queryspec"]
-      result["query_spec"]
-      result["planner"]
-      result["planner_output"]
-      result["meta"]["queryspec"]
-      result["debug"]["queryspec"]
-      result["result"]["queryspec"]
-      result["answer"]["meta"]["queryspec"]
-      result["prompt_bundle"]["meta"]["queryspec"]
-
-    Returns the first non-empty dict it finds.
-    """
     if not isinstance(result, dict):
         return {}
 
@@ -277,17 +258,14 @@ def extract_queryspec(result: dict) -> dict:
         ("planner",),
         ("planner_output",),
         ("plannerOutput",),
-
         ("meta", "queryspec"),
         ("meta", "query_spec"),
         ("meta", "planner"),
         ("meta", "planner_output"),
-
         ("debug", "queryspec"),
         ("debug", "query_spec"),
         ("debug", "planner"),
         ("debug", "planner_output"),
-
         ("result", "queryspec"),
         ("result", "query_spec"),
         ("result", "planner"),
@@ -296,7 +274,6 @@ def extract_queryspec(result: dict) -> dict:
         ("result", "meta", "query_spec"),
         ("result", "debug", "queryspec"),
         ("result", "debug", "planner_output"),
-
         ("answer", "queryspec"),
         ("answer", "query_spec"),
         ("answer", "planner"),
@@ -305,15 +282,12 @@ def extract_queryspec(result: dict) -> dict:
         ("answer", "meta", "query_spec"),
         ("answer", "debug", "queryspec"),
         ("answer", "debug", "planner_output"),
-
         ("final_answer", "queryspec"),
         ("final_answer", "query_spec"),
         ("final_answer", "meta", "queryspec"),
-
         ("synthesis", "queryspec"),
         ("synthesis", "query_spec"),
         ("synthesis", "meta", "queryspec"),
-
         ("prompt_bundle", "meta", "queryspec"),
         ("prompt_bundle", "queryspec"),
         ("prompt_meta", "queryspec"),
@@ -329,13 +303,6 @@ def extract_queryspec(result: dict) -> dict:
 
 
 def extract_planner_debug_candidates(result: dict) -> dict:
-    """
-    Return a diagnostic map of likely planner/queryspec locations.
-
-    This does not replace extract_queryspec(); it is for the Streamlit debug panel
-    so that if the primary planner output is {}, you can see where the backend
-    is actually putting related objects.
-    """
     if not isinstance(result, dict):
         return {}
 
@@ -371,19 +338,14 @@ def extract_planner_debug_candidates(result: dict) -> dict:
     ]
 
     found = {}
-
     for path in candidate_paths:
         value = _get_nested_value(result, path)
         if value not in (None, {}, [], ""):
             found[".".join(path)] = value
-
     return found
 
 
 def extract_answer_obj(result: dict):
-    """
-    Support old and new backend schemas.
-    """
     for key in ["answer", "final_answer", "response", "synthesis", "llm_answer"]:
         value = result.get(key)
         if value:
@@ -392,21 +354,11 @@ def extract_answer_obj(result: dict):
 
 
 def pick_summary_markdown_from_answer(answer_obj) -> str | None:
-    """
-    Return the best markdown string to display from an answer object.
-
-    Supported shapes:
-      1) answer is a string
-      2) answer = {"summary": "...", "raw_text": "..."}
-      3) answer = {"raw_text": {"summary": "...", "raw_text": "..."}}
-      4) answer = {"raw_text": {"raw_text": {"summary": "...", ...}}}
-    """
     if answer_obj is None:
         return None
 
     if isinstance(answer_obj, str) and answer_obj.strip():
         return answer_obj.strip()
-
     if not isinstance(answer_obj, dict):
         return None
 
@@ -425,7 +377,6 @@ def pick_summary_markdown_from_answer(answer_obj) -> str | None:
             return value.strip()
 
     rt = answer_obj.get("raw_text")
-
     if isinstance(rt, str) and rt.strip():
         return rt.strip()
 
@@ -445,10 +396,8 @@ def pick_summary_markdown_from_answer(answer_obj) -> str | None:
                 return value.strip()
 
         rt2 = rt.get("raw_text")
-
         if isinstance(rt2, str) and rt2.strip():
             return rt2.strip()
-
         if isinstance(rt2, dict):
             for key in [
                 "summary",
@@ -468,9 +417,6 @@ def pick_summary_markdown_from_answer(answer_obj) -> str | None:
 
 
 def pick_summary_markdown(result: dict) -> str | None:
-    """
-    First check top-level result fields, then nested answer-like fields.
-    """
     if not isinstance(result, dict):
         return None
 
@@ -494,12 +440,6 @@ def pick_summary_markdown(result: dict) -> str | None:
 
 
 def pick_suggested_experiments(result: dict) -> list:
-    """
-    Support optional suggested experiments if the backend provides them.
-
-    This is preserved for backward compatibility, but the current miRAssist
-    prompting strategy should normally not return experimental recommendations.
-    """
     keys = [
         "suggested_experiments",
         "experiments",
@@ -576,52 +516,182 @@ def sidebar_footer(author: str, version: str):
     )
 
 
-# ----------------------------
-# UI
-# ----------------------------
+def get_app_diagnostics(api_url: str) -> dict:
+    return {
+        "app_mode": APP_MODE,
+        "llm_backend": get_llm_backend(),
+        "planner_model": get_planner_model(),
+        "synth_model": get_synth_model(),
+        "openai_configured": openai_configured(),
+        "jobstore_backend": get_jobstore_backend(),
+        "evidence_backend": get_evidence_backend(),
+        "database_configured": database_configured(),
+        "backend_url_in_use": bool(APP_MODE == "api" and api_url),
+    }
+
+
+def clear_session_outputs() -> None:
+    for key in [
+        "last_result",
+        "last_query_id",
+        "last_error",
+        "last_status",
+        "last_submit_response",
+    ]:
+        st.session_state.pop(key, None)
+
+
+def run_direct_mode(submit_payload: dict) -> None:
+    query_id = uuid.uuid4().hex[:16]
+    st.session_state["last_query_id"] = query_id
+    st.session_state["last_submit_response"] = {"query_id": query_id, "mode": "direct"}
+
+    status_box = st.empty()
+    progress = st.progress(0)
+    status_box.info("Status: **queued** | mode: **direct**")
+    progress.progress(0.05)
+
+    with st.spinner("Running miRAssist directly in this Streamlit process..."):
+        result = run_query_job(
+            query_id=query_id,
+            question=submit_payload["question"],
+            k=submit_payload["k"],
+            min_support=submit_payload["min_support"],
+            novel=submit_payload["novel"],
+            require_binding_evidence=submit_payload["require_binding_evidence"],
+            require_expression=submit_payload["require_expression"],
+            pathway_mode=submit_payload["pathway_mode"],
+        )
+
+    final_result = read_job(query_id)
+    if not final_result or final_result.get("status") == "unknown":
+        final_result = result
+
+    st.session_state["last_status"] = {
+        "status": final_result.get("status", "unknown"),
+        "stage": final_result.get("stage"),
+    }
+    st.session_state["last_result"] = final_result
+
+    if final_result.get("status") == "done":
+        progress.progress(1.0)
+        status_box.success(f"Status: **done** | query_id: **{query_id}**")
+    else:
+        progress.progress(0.0)
+        status_box.error(
+            f"Status: **{final_result.get('status', 'error')}** | "
+            f"{final_result.get('error', 'Direct mode execution failed.')}"
+        )
+
+
+def run_api_mode(api_url: str, submit_payload: dict) -> None:
+    resp = safe_request_json(
+        "POST",
+        f"{api_url}/query",
+        json=submit_payload,
+        timeout=60,
+    )
+    st.session_state["last_submit_response"] = resp
+
+    query_id = resp.get("query_id") or resp.get("job_id") or resp.get("id")
+    if not query_id:
+        raise RuntimeError(
+            "Backend did not return a query_id/job_id/id.\n"
+            f"Response: {json.dumps(resp, indent=2)[:4000]}"
+        )
+
+    st.session_state["last_query_id"] = query_id
+    st.info(f"Submitted: `{query_id}`")
+
+    status_box = st.empty()
+    progress = st.progress(0)
+    max_wait_seconds = 15 * 60
+    poll_every = 5
+    t0 = time.time()
+
+    with st.spinner("Running..."):
+        final_status_json = {}
+
+        while True:
+            elapsed = time.time() - t0
+            if elapsed > max_wait_seconds:
+                raise TimeoutError("Timed out waiting for miRAssist to finish.")
+
+            s = safe_request_json("GET", f"{api_url}/status/{query_id}", timeout=30)
+            st.session_state["last_status"] = s
+            final_status_json = s
+
+            progress.progress(progress_from_status(s, elapsed, max_wait_seconds))
+            status_box.info(f"{status_display_text(s)} | elapsed: **{int(elapsed)}s**")
+
+            if is_terminal_status(s):
+                break
+            time.sleep(poll_every)
+
+    status = final_status_json.get("status", "unknown")
+    if status in {"error", "failed", "not_found"}:
+        try:
+            result = safe_request_json("GET", f"{api_url}/result/{query_id}", timeout=60)
+            st.session_state["last_result"] = result
+        except Exception:
+            pass
+
+        err_msg = final_status_json.get("error") or f"Backend returned status: {status}"
+        raise RuntimeError(err_msg)
+
+    result = safe_request_json("GET", f"{api_url}/result/{query_id}", timeout=600)
+    st.session_state["last_result"] = result
+    progress.progress(1.0)
+
+
 st.title("miRAssist")
-st.caption("Ask a question to query the miRNA–Target database")
+st.caption("Ask a question to query the miRNA-target database")
 
 with st.sidebar:
     st.subheader("Connection")
+    st.caption(f"Mode: `{APP_MODE}`")
 
-    default_url = st.session_state.get("api_url", "http://127.0.0.1:7861")
-    api_url = st.text_input(
-        "Backend API base URL",
-        value=default_url,
-        placeholder="http://127.0.0.1:7861 or https://xxxxx.ngrok-free.app",
-        help="Paste the base URL only (no trailing slash).",
-    )
-    api_url = normalize_base_url(api_url)
-    st.session_state["api_url"] = api_url
+    default_url = st.session_state.get("api_url", DEFAULT_BACKEND_URL)
+    api_url = normalize_base_url(default_url)
+    clear = False
 
-    colA, colB = st.columns([3, 2])
-    with colA:
-        ping = st.button("Test Connection")
-    with colB:
+    if APP_MODE == "api":
+        api_url = st.text_input(
+            "Backend API base URL",
+            value=default_url,
+            placeholder="http://127.0.0.1:7861 or https://xxxxx.ngrok-free.app",
+            help="Paste the base URL only (no trailing slash).",
+        )
+        api_url = normalize_base_url(api_url)
+        st.session_state["api_url"] = api_url
+
+        col_a, col_b = st.columns([3, 2])
+        with col_a:
+            ping = st.button("Test Connection")
+        with col_b:
+            clear = st.button("Clear")
+
+        if ping:
+            if not api_url:
+                st.warning("Enter an API base URL first.")
+            else:
+                try:
+                    out = safe_request_json("GET", f"{api_url}/health", timeout=10)
+                    st.success("Backend reachable.")
+                    st.json(out)
+                except Exception as e:
+                    st.error(str(e))
+    else:
+        st.info("Direct mode is active. No separate FastAPI backend service is required.")
         clear = st.button("Clear")
+        st.session_state["api_url"] = api_url
 
     if clear:
-        for k2 in [
-            "last_result",
-            "last_query_id",
-            "last_error",
-            "last_status",
-            "last_submit_response",
-        ]:
-            st.session_state.pop(k2, None)
+        clear_session_outputs()
         st.rerun()
 
-    if ping:
-        if not api_url:
-            st.warning("Enter an API base URL first.")
-        else:
-            try:
-                out = safe_request_json("GET", f"{api_url}/health", timeout=10)
-                st.success("Backend reachable.")
-                st.json(out)
-            except Exception as e:
-                st.error(str(e))
+    with st.expander("App diagnostics", expanded=False):
+        st.json(get_app_diagnostics(api_url))
 
     sidebar_footer(APP_AUTHOR, APP_VERSION)
 
@@ -692,17 +762,12 @@ with c6:
         ),
     )
 
-run = st.button("Run miRAssist", type="primary", disabled=(not api_url or not question.strip()))
+run_disabled = not question.strip() or (APP_MODE == "api" and not st.session_state.get("api_url"))
+run = st.button("Run miRAssist", type="primary", disabled=run_disabled)
 
 
-# ----------------------------
-# Run + poll
-# ----------------------------
 if run:
-    st.session_state.pop("last_result", None)
-    st.session_state.pop("last_error", None)
-    st.session_state.pop("last_status", None)
-    st.session_state.pop("last_submit_response", None)
+    clear_session_outputs()
 
     try:
         submit_payload = {
@@ -715,91 +780,14 @@ if run:
             "pathway_mode": str(pathway_mode),
         }
 
-        resp = safe_request_json(
-            "POST",
-            f"{api_url}/query",
-            json=submit_payload,
-            timeout=60,
-        )
-        st.session_state["last_submit_response"] = resp
-
-        query_id = resp.get("query_id") or resp.get("job_id") or resp.get("id")
-        if not query_id:
-            raise RuntimeError(
-                "Backend did not return a query_id/job_id/id.\n"
-                f"Response: {json.dumps(resp, indent=2)[:4000]}"
-            )
-
-        st.session_state["last_query_id"] = query_id
-        st.info(f"Submitted: `{query_id}`")
-
-        status_box = st.empty()
-        progress = st.progress(0)
-
-        max_wait_seconds = 15 * 60
-        poll_every = 5
-        t0 = time.time()
-
-        with st.spinner("Running…"):
-            final_status_json = {}
-
-            while True:
-                elapsed = time.time() - t0
-
-                if elapsed > max_wait_seconds:
-                    raise TimeoutError("Timed out waiting for miRAssist to finish.")
-
-                s = safe_request_json(
-                    "GET",
-                    f"{api_url}/status/{query_id}",
-                    timeout=30,
-                )
-                st.session_state["last_status"] = s
-                final_status_json = s
-
-                progress.progress(progress_from_status(s, elapsed, max_wait_seconds))
-                status_box.info(
-                    f"{status_display_text(s)} • elapsed: **{int(elapsed)}s**"
-                )
-
-                if is_terminal_status(s):
-                    break
-
-                time.sleep(poll_every)
-
-        status = final_status_json.get("status", "unknown")
-
-        if status in {"error", "failed", "not_found"}:
-            # Fetch result too, because backend may include traceback/error details there.
-            try:
-                result = safe_request_json(
-                    "GET",
-                    f"{api_url}/result/{query_id}",
-                    timeout=60,
-                )
-                st.session_state["last_result"] = result
-            except Exception:
-                pass
-
-            err_msg = final_status_json.get("error") or f"Backend returned status: {status}"
-            raise RuntimeError(err_msg)
-
-        result = safe_request_json(
-            "GET",
-            f"{api_url}/result/{query_id}",
-            timeout=600,
-        )
-
-        st.session_state["last_result"] = result
-        progress.progress(1.0)
-
+        if APP_MODE == "direct":
+            run_direct_mode(submit_payload)
+        else:
+            run_api_mode(st.session_state.get("api_url", ""), submit_payload)
     except Exception as e:
         st.session_state["last_error"] = str(e)
 
 
-# ----------------------------
-# Display results
-# ----------------------------
 err = st.session_state.get("last_error")
 if err:
     st.error(err)
@@ -825,12 +813,10 @@ if result:
 
         with st.expander("Debug: full result JSON", expanded=False):
             st.json(result)
-
     else:
         st.markdown("## Answer")
 
         summary_md = pick_summary_markdown(result)
-
         if summary_md:
             placeholder = st.empty()
             if st.session_state.get("animate_answer", True):
@@ -845,8 +831,6 @@ if result:
         else:
             st.info("No summary text found in backend response.")
 
-        # Preserved for backward compatibility, but the updated prompting.py
-        # should normally avoid returning experimental recommendations.
         experiments = pick_suggested_experiments(result)
         if experiments:
             st.markdown("## Suggested experiments")
@@ -855,7 +839,6 @@ if result:
 
         with st.expander("Planner output (QuerySpec)", expanded=False):
             queryspec = extract_queryspec(result)
-
             if queryspec:
                 st.json(queryspec)
             else:
@@ -864,11 +847,10 @@ if result:
                 )
                 st.caption(
                     "This usually means either the backend did not include planner output "
-                    "in /result/{query_id}, or it is stored under a response key not yet handled."
+                    "in the result payload, or it is stored under a response key not yet handled."
                 )
 
                 debug_candidates = extract_planner_debug_candidates(result)
-
                 if debug_candidates:
                     st.markdown("#### Planner-like/debug objects found")
                     st.json(debug_candidates)
