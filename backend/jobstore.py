@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any, Dict
 
@@ -14,23 +15,85 @@ JOB_TABLE = "mirassist_jobs"
 _INITIALIZED_DATABASES: set[str] = set()
 
 
-def _to_jsonable(obj: Any) -> Any:
+def _sanitize_json_value(obj: Any, path: str = "$") -> Any:
     if obj is None:
         return None
-    if isinstance(obj, (str, int, float, bool)):
+
+    if isinstance(obj, Path):
+        return str(obj)
+
+    if isinstance(obj, bool):
         return obj
+
+    if isinstance(obj, int):
+        return obj
+
+    if isinstance(obj, float):
+        return obj if math.isfinite(obj) else None
+
+    if isinstance(obj, str):
+        return obj
+
     if isinstance(obj, dict):
-        return {str(k): _to_jsonable(v) for k, v in obj.items()}
-    if isinstance(obj, (list, tuple)):
-        return [_to_jsonable(x) for x in obj]
+        return {
+            str(k): _sanitize_json_value(v, f"{path}.{k}")
+            for k, v in obj.items()
+        }
+
+    if isinstance(obj, (list, tuple, set)):
+        return [
+            _sanitize_json_value(value, f"{path}[{idx}]")
+            for idx, value in enumerate(obj)
+        ]
+
     try:
         import numpy as np  # type: ignore
+        import pandas as pd  # type: ignore
+
+        if obj is pd.NA or obj is pd.NaT:
+            return None
+
+        if isinstance(obj, pd.Timestamp):
+            return obj.isoformat()
+
+        if isinstance(obj, pd.DataFrame):
+            records = obj.to_dict(orient="records")
+            return _sanitize_json_value(records, path)
+
+        if isinstance(obj, pd.Series):
+            if obj.index.is_unique:
+                return _sanitize_json_value(obj.to_dict(), path)
+            return _sanitize_json_value(obj.tolist(), path)
+
+        if isinstance(obj, np.ndarray):
+            return _sanitize_json_value(obj.tolist(), path)
 
         if isinstance(obj, (np.integer, np.floating, np.bool_)):
-            return obj.item()
+            native = obj.item()
+            if isinstance(native, float) and not math.isfinite(native):
+                return None
+            return native
+
+        if isinstance(obj, np.datetime64):
+            return str(obj)
     except Exception:
         pass
+
     return str(obj)
+
+
+def sanitize_json_payload(payload: Any) -> Any:
+    return _sanitize_json_value(payload)
+
+
+def _json_dumps_safe(payload: Any) -> str:
+    safe_payload = sanitize_json_payload(payload)
+    try:
+        return json.dumps(safe_payload, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Job payload is not valid JSON after sanitization: {exc}"
+        ) from exc
 
 
 def initialize_jobstore() -> None:
@@ -77,7 +140,7 @@ def _is_missing_job(payload: Dict[str, Any]) -> bool:
 
 
 def _merge_payload(query_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-    safe_payload = _to_jsonable(payload)
+    safe_payload = sanitize_json_payload(payload)
     existing = read_job(query_id)
     if _is_missing_job(existing):
         return safe_payload
@@ -101,7 +164,7 @@ def _write_job_filesystem(query_id: str, payload: Dict[str, Any]) -> None:
     p = job_path(query_id)
     merged = _merge_payload(query_id, payload)
     tmp = p.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+    tmp.write_text(_json_dumps_safe(merged), encoding="utf-8")
     tmp.replace(p)
 
 
@@ -120,10 +183,10 @@ def _read_job_postgres(query_id: str) -> Dict[str, Any]:
     if payload is None:
         return {"status": "unknown"}
     if isinstance(payload, dict):
-        return payload
+        return sanitize_json_payload(payload)
     if isinstance(payload, str):
         return json.loads(payload)
-    return _to_jsonable(payload)
+    return sanitize_json_payload(payload)
 
 
 def _write_job_postgres(query_id: str, payload: Dict[str, Any]) -> None:
@@ -134,7 +197,7 @@ def _write_job_postgres(query_id: str, payload: Dict[str, Any]) -> None:
         return
 
     merged = _merge_payload(query_id, payload)
-    conn_payload = json.dumps(merged, ensure_ascii=False)
+    conn_payload = _json_dumps_safe(merged)
     status = merged.get("status")
     stage = merged.get("stage")
 
@@ -214,12 +277,12 @@ class JobStore:
             return {"status": "running"}
 
     def write(self, query_id: str, payload: Dict[str, Any]) -> None:
-        safe_payload = _to_jsonable(payload)
+        safe_payload = sanitize_json_payload(payload)
         existing = self.read(query_id)
         merged = dict(existing) if not _is_missing_job(existing) else {}
         merged.update(safe_payload)
 
         p = self._path(query_id)
         tmp = p.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(merged, ensure_ascii=False), encoding="utf-8")
+        tmp.write_text(_json_dumps_safe(merged), encoding="utf-8")
         tmp.replace(p)

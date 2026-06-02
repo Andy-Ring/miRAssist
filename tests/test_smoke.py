@@ -6,6 +6,8 @@ import unittest
 import uuid
 from unittest.mock import patch
 
+import numpy as np
+import pandas as pd
 from fastapi.testclient import TestClient
 
 from backend.app import app
@@ -29,6 +31,36 @@ class FileSystemJobStoreTests(unittest.TestCase):
         self.assertEqual(payload["status"], "running")
         self.assertEqual(payload["stage"], "queued")
         self.assertEqual(payload["value"], 1)
+
+    def test_filesystem_jobstore_sanitizes_non_json_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "JOBSTORE_BACKEND": "filesystem",
+                "MIRASSIST_JOB_DIR": tmpdir,
+            },
+            clear=False,
+        ):
+            write_job(
+                "job-fs-sanitize",
+                {
+                    "status": "done",
+                    "x": float("nan"),
+                    "y": float("inf"),
+                    "rows": [{"ts_best_contextpp": float("nan")}],
+                    "np_float": np.float64(np.nan),
+                    "pd_na": pd.NA,
+                    "pd_nat": pd.NaT,
+                },
+            )
+            payload = read_job("job-fs-sanitize")
+
+        self.assertIsNone(payload["x"])
+        self.assertIsNone(payload["y"])
+        self.assertIsNone(payload["rows"][0]["ts_best_contextpp"])
+        self.assertIsNone(payload["np_float"])
+        self.assertIsNone(payload["pd_na"])
+        self.assertIsNone(payload["pd_nat"])
 
 
 class ApiSmokeTests(unittest.TestCase):
@@ -146,6 +178,32 @@ class PostgresJobStoreTests(unittest.TestCase):
         self.assertEqual(payload["status"], "done")
         self.assertEqual(payload["stage"], "queued")
         self.assertEqual(payload["answer"]["summary"], "ok")
+
+    def test_postgres_jobstore_sanitizes_non_json_numbers(self) -> None:
+        query_id = f"job-pg-sanitize-{uuid.uuid4().hex[:8]}"
+        with patch.dict(
+            os.environ,
+            {
+                "JOBSTORE_BACKEND": "postgres",
+            },
+            clear=False,
+        ):
+            write_job(
+                query_id,
+                {
+                    "status": "done",
+                    "x": float("nan"),
+                    "y": float("inf"),
+                    "rows": [{"ts_best_contextpp": float("nan")}],
+                    "np_float": np.float64(np.nan),
+                },
+            )
+            payload = read_job(query_id)
+
+        self.assertIsNone(payload["x"])
+        self.assertIsNone(payload["y"])
+        self.assertIsNone(payload["rows"][0]["ts_best_contextpp"])
+        self.assertIsNone(payload["np_float"])
 
 
 if __name__ == "__main__":
