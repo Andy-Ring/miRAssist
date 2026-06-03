@@ -27,6 +27,11 @@ from backend.config import (
 )
 from backend.jobstore import read_job
 from backend.worker import run_query_job
+from frontend.help_content import (
+    get_about_evidence_markdown,
+    get_how_to_use_markdown,
+    should_show_api_connection_controls,
+)
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent
@@ -106,7 +111,7 @@ st.markdown(
 
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.7.3"
+APP_VERSION = "0.7.4"
 APP_AUTHOR = "Andy Ring"
 
 
@@ -653,14 +658,19 @@ st.title("miRAssist")
 st.caption("Ask a question to query the miRNA-target database")
 
 with st.sidebar:
-    st.subheader("Connection")
-    st.caption(f"Mode: `{APP_MODE}`")
-
     default_url = st.session_state.get("api_url", DEFAULT_BACKEND_URL)
     api_url = normalize_base_url(default_url)
     clear = False
 
-    if APP_MODE == "api":
+    with st.expander("How to use miRAssist", expanded=False):
+        st.markdown(get_how_to_use_markdown())
+
+    with st.expander("About evidence", expanded=False):
+        st.markdown(get_about_evidence_markdown())
+
+    if should_show_api_connection_controls(APP_MODE):
+        st.subheader("Connection")
+        st.caption(f"Mode: `{APP_MODE}`")
         api_url = st.text_input(
             "Backend API base URL",
             value=default_url,
@@ -687,7 +697,6 @@ with st.sidebar:
                 except Exception as e:
                     st.error(str(e))
     else:
-        st.info("Direct mode is active. No separate FastAPI backend service is required.")
         clear = st.button("Clear")
         st.session_state["api_url"] = api_url
 

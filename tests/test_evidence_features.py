@@ -88,8 +88,8 @@ class FeaturePercentileTests(unittest.TestCase):
 
         self.assertTrue(any("miRDB score 100" in line for line in card["published_model_evidence"]))
         self.assertTrue(any("TargetScan context strength" in line for line in card["published_model_evidence"]))
-        self.assertTrue(any("CLIP sites 5" in line and "exceptional" in line for line in card["clip_binding_evidence"]))
-        self.assertTrue(any("retained by strict pathway filter" in line for line in card["pathway_evidence"]))
+        self.assertTrue(any("CLIP signal 10" in line and "exceptional" in line for line in card["clip_binding_evidence"]))
+        self.assertTrue(any("Retained by strict pathway filter" in line for line in card["pathway_evidence"]))
         self.assertEqual(card["pathway_names"][0], "apoptosis")
         self.assertIn("mirdb_best_score", card["raw_key_values"])
         self.assertEqual(card["evidence_support_count"], 8)
@@ -97,6 +97,10 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertIn("TargetScan", card["evidence_categories_present"])
         self.assertIn("Seed/site", card["evidence_categories_present"])
         self.assertIn("RNAhybrid/structure", card["evidence_categories_present"])
+        self.assertEqual(card["primary_mirdb_evidence"], "miRDB score 100 (100th percentile; exceptional; very strong model support)")
+        self.assertEqual(card["primary_clip_evidence"], "CLIP signal 10 (100th percentile; exceptional)")
+        self.assertIn("TargetScan context strength", card["primary_targetscan_evidence"])
+        self.assertNotIn("miRDB mean score", " ".join(card["published_model_evidence"]))
 
     def test_prompt_bundle_uses_required_headings(self) -> None:
         shortlist = self.ev.iloc[[4, 3]].copy()
@@ -210,6 +214,82 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertEqual(format_percentile(11), "11th percentile")
         self.assertEqual(format_percentile(21), "21st percentile")
         self.assertEqual(format_percentile(93), "93rd percentile")
+
+    def test_mirdb_primary_display_uses_best_score_only(self) -> None:
+        row = pd.Series(
+            {
+                "mirdb_best_score": 91.5,
+                "mirdb_best_score_percentile": 84.0,
+                "mirdb_best_score_label": "high",
+                "mirdb_mean_score": 89.4,
+                "mirdb_mean_score_percentile": 80.0,
+                "mirdb_mean_score_label": "high",
+            }
+        )
+
+        sections = build_evidence_sections(row)
+        self.assertEqual(
+            sections["primary_mirdb_evidence"],
+            "miRDB score 91.5 (84th percentile; high; very strong model support)",
+        )
+        self.assertEqual(len(sections["published_model_evidence"]), 1)
+
+    def test_clip_primary_display_uses_clip_sum_over_clip_max(self) -> None:
+        row = pd.Series(
+            {
+                "clip_exp_sum": 25.0,
+                "clip_exp_sum_percentile": 98.0,
+                "clip_exp_sum_label": "exceptional",
+                "clip_exp_max": 11.0,
+                "clip_exp_max_percentile": 90.0,
+                "clip_exp_max_label": "very high",
+                "n_clip_sites": 7,
+                "n_clip_sites_percentile": 99.0,
+                "n_clip_sites_label": "exceptional",
+            }
+        )
+
+        sections = build_evidence_sections(row)
+        self.assertEqual(
+            sections["primary_clip_evidence"],
+            "CLIP signal 25 (98th percentile; exceptional)",
+        )
+        self.assertEqual(sections["clip_binding_evidence"], ["CLIP signal 25 (98th percentile; exceptional)"])
+
+    def test_targetscan_primary_display_uses_context_strength(self) -> None:
+        row = pd.Series(
+            {
+                "ts_context_strength": 0.932,
+                "ts_context_strength_percentile": 100.0,
+                "ts_context_strength_label": "exceptional",
+                "ts_best_percentile": 99.0,
+                "ts_best_percentile_percentile": 100.0,
+                "ts_best_percentile_label": "exceptional",
+            }
+        )
+
+        sections = build_evidence_sections(row)
+        self.assertEqual(
+            sections["primary_targetscan_evidence"],
+            "TargetScan context strength 0.932 (100th percentile; exceptional)",
+        )
+        self.assertEqual(
+            sections["published_model_evidence"],
+            ["TargetScan context strength 0.932 (100th percentile; exceptional)"],
+        )
+
+    def test_seed_site_zero_sites_not_presented_as_positive_key_evidence(self) -> None:
+        row = pd.Series(
+            {
+                "n_total_sites": 0,
+                "n_total_sites_percentile": 13.0,
+                "n_total_sites_label": "low",
+            }
+        )
+
+        sections = build_evidence_sections(row)
+        self.assertIsNone(sections["primary_seed_evidence"])
+        self.assertEqual(sections["seed_site_evidence"], [])
 
 
 if __name__ == "__main__":

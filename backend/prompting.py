@@ -27,6 +27,9 @@ Hard rules:
 - Percentiles are interpretation labels for the associated feature, not separate evidence.
 - Do not count a raw feature and its percentile annotation separately.
 - Evidence support count is based on distinct evidence categories, not individual columns.
+- Use at most one primary metric per evidence category unless the card explicitly marks additional metrics as nonredundant.
+- Do not list best/mean/max variants of the same evidence type as separate key evidence unless the card makes that necessary.
+- Do not include low or absent evidence as a key evidence line unless it is an important caveat.
 - Do not describe computational predictions as experimental validation.
 
 Evidence interpretation rules:
@@ -61,7 +64,7 @@ Required output format:
 - **Evidence categories:** miRTarBase; miRDB; TargetScan; CLIP; TCGA context; Pathway
 - **Pathways:** pathway names if pathway filtering was applied, otherwise "Not pathway-filtered"
 - **Key pieces of evidence:**
-  - grouped by evidence category, with percentiles treated only as modifiers
+  - grouped by evidence category, with one primary metric per category and percentiles treated only as modifiers
 - **Explanation:** 2-4 sentences grounded only in the evidence card
 
 ## Final recommendation
@@ -141,6 +144,8 @@ Requirements:
 - Use the backend-provided evidence_support_count exactly as given.
 - Percentiles are interpretation labels for the associated feature, not separate evidence.
 - Do not count raw values and percentiles separately.
+- Use at most one primary metric per evidence category unless the card explicitly marks additional metrics as nonredundant.
+- Keep "Key pieces of evidence" compact and grouped by category.
 - Do not invent percentiles, feature strength labels, pathway membership, or gene-phenotype links.
 - Do not claim a candidate belongs to a pathway unless the card explicitly says it passed the pathway filter or names the pathways.
 - Use the required output structure from the system prompt.
@@ -173,6 +178,14 @@ Evidence cards:
             raw_value_line = "; ".join(f"{key}={value}" for key, value in raw_key_values.items())
         pathway_names = card.get("pathway_names") or []
         evidence_categories_present = card.get("evidence_categories_present") or []
+        primary_curated = card.get("primary_curated_evidence")
+        primary_mirdb = card.get("primary_mirdb_evidence")
+        primary_targetscan = card.get("primary_targetscan_evidence")
+        primary_clip = card.get("primary_clip_evidence")
+        primary_seed = card.get("primary_seed_evidence")
+        primary_structure = card.get("primary_structure_evidence")
+        primary_tcga = card.get("primary_tcga_evidence")
+        primary_pathway = card.get("primary_pathway_evidence")
         block = [
             f"Candidate {index}: {card.get('name', 'UNKNOWN')}",
             f"miRNA: {card.get('mirna_name', '')}",
@@ -181,14 +194,15 @@ Evidence cards:
             f"Evidence support count: {card.get('evidence_support_count', card.get('number_of_features_supporting_interaction', 0))} categories",
             "Evidence categories: " + ("; ".join(evidence_categories_present) if evidence_categories_present else "None"),
             "Pathways: " + ("; ".join(pathway_names) if pathway_names else "Not pathway-filtered"),
-            "Curated evidence: " + ("; ".join(card.get("target_evidence") or []) or "None"),
-            "Published model evidence: " + ("; ".join(card.get("published_model_evidence") or []) or "None"),
-            "Binding evidence: " + ("; ".join(card.get("clip_binding_evidence") or []) or "None"),
-            "Seed/site evidence: " + ("; ".join(card.get("seed_site_evidence") or []) or "None"),
-            "Structure evidence: " + ("; ".join(card.get("structure_evidence") or []) or "None"),
-            "Context evidence: " + ("; ".join(card.get("tcga_context_evidence") or []) or "None"),
-            "Pathway evidence: " + ("; ".join(card.get("pathway_evidence") or []) or "Not pathway-filtered"),
-            "Strongest features: " + ("; ".join(card.get("strongest_features") or []) or "None"),
+            "Curated evidence: " + (primary_curated or "None"),
+            "miRDB evidence: " + (primary_mirdb or "None"),
+            "TargetScan evidence: " + (primary_targetscan or "None"),
+            "Binding evidence: " + (primary_clip or "None"),
+            "Seed/site evidence: " + (primary_seed or "None"),
+            "Structure evidence: " + (primary_structure or "None"),
+            "Context evidence: " + (primary_tcga or "None"),
+            "Pathway evidence: " + (primary_pathway or "Not pathway-filtered"),
+            "Other evidence details: " + ("; ".join(card.get("strongest_features") or []) or "None"),
             "Raw key values: " + raw_value_line,
             "Caveats: " + ("; ".join(card.get("caveats") or []) or "None"),
         ]

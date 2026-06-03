@@ -57,6 +57,12 @@ streamlit run app.py
 
 In direct mode, Streamlit runs the workflow in-process via `backend.worker.run_query_job` and still writes job state through the shared jobstore layer.
 
+The default direct-mode UI is intentionally standalone:
+
+- No backend connection box is shown in the app
+- The sidebar includes `How to use miRAssist` and `About evidence` help sections
+- API connection controls remain available only when `MIRASSIST_APP_MODE=api`
+
 ## Optional API mode
 
 API mode preserves the current split frontend/backend flow:
@@ -75,9 +81,11 @@ BACKEND_URL=http://127.0.0.1:7861
 streamlit run app.py
 ```
 
+This mode is now primarily developer-facing. The default Posit deployment should stay in direct mode.
+
 ## Using OpenAI-hosted models
 
-miRAssist can use separate OpenAI-hosted models for planner and synthesizer.
+miRAssist can use separate OpenAI-hosted models for planner and synthesizer. This is the recommended model backend for current deployments.
 
 Example:
 
