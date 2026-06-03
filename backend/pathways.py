@@ -20,6 +20,21 @@ _GENE_TO_PATHWAYS_CACHE: Optional[pd.DataFrame] = None
 _GENE_TO_PATHWAYS_SOURCE: Optional[str] = None
 
 _WORD_RE = re.compile(r"[^a-z0-9]+")
+_PHENOTYPE_SYNONYMS: Dict[str, List[str]] = {
+    "energy metabolism": [
+        "energy metabolism",
+        "metabolic reprogramming",
+        "glycolysis",
+        "oxidative phosphorylation",
+        "cellular respiration",
+        "mitochondrial function",
+        "atp metabolism",
+    ],
+    "apoptosis": [
+        "apoptosis",
+        "apoptotic process",
+    ],
+}
 
 
 def _normalize_text(value: Any) -> str:
@@ -106,6 +121,9 @@ def _build_pathway_query_terms(queryspec: Dict[str, Any]) -> List[str]:
     if phenotype:
         terms.append(phenotype)
 
+    synonym_terms = _PHENOTYPE_SYNONYMS.get(phenotype.lower(), [])
+    terms.extend(synonym_terms)
+
     if phenotype.lower() == "apoptosis":
         if direction in {"promotes", "increases"}:
             terms.extend(
@@ -147,6 +165,31 @@ def _pathway_context_enabled(queryspec: Dict[str, Any]) -> bool:
     )
 
 
+def compact_pathway_selection(selection: Dict[str, Any], include_internal: bool = False) -> Dict[str, Any]:
+    compact: Dict[str, Any] = {
+        "enabled": bool(selection.get("enabled")),
+        "mode": selection.get("mode", "none"),
+        "phenotype": selection.get("phenotype"),
+        "direction": selection.get("direction"),
+        "query_terms": list(selection.get("query_terms") or []),
+        "selected_pathways": list(selection.get("selected_pathways") or []),
+        "n_selected_pathways": int(selection.get("n_selected_pathways") or 0),
+        "n_selected_genes": int(selection.get("n_selected_genes") or 0),
+        "selected_gene_examples": list(selection.get("selected_gene_examples") or []),
+        "warnings": list(selection.get("warnings") or []),
+    }
+    if include_internal:
+        if selection.get("selected_genes") is not None:
+            compact["selected_genes"] = list(selection.get("selected_genes") or [])
+        if selection.get("selected_gene_pathways") is not None:
+            compact["selected_gene_pathways"] = dict(selection.get("selected_gene_pathways") or {})
+        if selection.get("_selected_gene_set") is not None:
+            compact["_selected_gene_set"] = set(selection.get("_selected_gene_set") or set())
+        if selection.get("_selected_gene_pathways") is not None:
+            compact["_selected_gene_pathways"] = dict(selection.get("_selected_gene_pathways") or {})
+    return compact
+
+
 def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
     phenotype_context = queryspec.get("phenotype_context") or {}
     enabled = _pathway_context_enabled(queryspec)
@@ -159,9 +202,11 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
         "query_terms": [],
         "selected_pathways": [],
         "n_selected_pathways": 0,
-        "selected_genes": [],
         "n_selected_genes": 0,
+        "selected_gene_examples": [],
         "warnings": [],
+        "_selected_gene_set": set(),
+        "_selected_gene_pathways": {},
     }
 
     if not enabled:
@@ -285,7 +330,9 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
         if pathway_name not in gene_pathway_map[gene_symbol]:
             gene_pathway_map[gene_symbol].append(pathway_name)
 
-    selection["selected_genes"] = sorted(gene_pathway_map.keys())
-    selection["n_selected_genes"] = len(selection["selected_genes"])
-    selection["selected_gene_pathways"] = gene_pathway_map
+    selected_genes = sorted(gene_pathway_map.keys())
+    selection["n_selected_genes"] = len(selected_genes)
+    selection["selected_gene_examples"] = selected_genes[:20]
+    selection["_selected_gene_set"] = set(selected_genes)
+    selection["_selected_gene_pathways"] = gene_pathway_map
     return selection

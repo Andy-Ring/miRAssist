@@ -79,11 +79,13 @@ def build_user_prompt(
     cards: List[Dict[str, Any]],
     needs_clarification: Optional[List[str]] = None,
     requested_results: Optional[int] = None,
+    retrieval_diagnostics: Optional[Dict[str, Any]] = None,
 ) -> str:
     phenotype_keywords = phenotype_keywords or []
     pathway_keywords = pathway_keywords or []
     pathway_selection = pathway_selection or {}
     needs_clarification = needs_clarification or []
+    retrieval_diagnostics = retrieval_diagnostics or {}
 
     if direction == "mirna_to_targets":
         task = "Identify and rank target genes regulated by the miRNA."
@@ -144,6 +146,17 @@ Context:
 Evidence cards:
 """
 
+    if not cards:
+        no_candidate_lines = [
+            "No evidence cards were produced because backend retrieval returned no candidates after filtering.",
+            f"Final shortlist size: {retrieval_diagnostics.get('n_final_shortlist', 0)}",
+        ]
+        if retrieval_diagnostics.get("warnings"):
+            no_candidate_lines.append(
+                "Backend diagnostics: " + "; ".join(retrieval_diagnostics.get("warnings") or [])
+            )
+        return instr + "\n\n" + "\n".join(no_candidate_lines)
+
     card_blocks: List[str] = []
     for index, card in enumerate(cards, start=1):
         raw_key_values = card.get("raw_key_values") or {}
@@ -193,6 +206,7 @@ def build_prompt_bundle(
     cards_from_dataframe: Optional[Callable[..., List[Dict[str, Any]]]] = None,
     tcga: Optional[str] = None,
     meta: Optional[Dict[str, Any]] = None,
+    retrieval_diagnostics: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     qs = queryspec or {}
 
@@ -252,6 +266,7 @@ def build_prompt_bundle(
         cards=cards,
         needs_clarification=needs_clarification or [],
         requested_results=int(requested_results) if requested_results is not None else None,
+        retrieval_diagnostics=retrieval_diagnostics or {},
     )
 
     bundle: Dict[str, Any] = {
@@ -263,5 +278,10 @@ def build_prompt_bundle(
         bundle["meta"] = meta
     elif queryspec is not None:
         bundle["meta"] = {"queryspec": queryspec}
+
+    bundle.setdefault("meta", {})
+    bundle["meta"]["cards_count"] = len(cards or [])
+    if retrieval_diagnostics is not None:
+        bundle["meta"]["retrieval_diagnostics"] = retrieval_diagnostics
 
     return bundle

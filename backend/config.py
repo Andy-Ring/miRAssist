@@ -176,6 +176,10 @@ def get_synth_temperature() -> float:
     return float(os.getenv("MIRASSIST_OPENAI_TEMPERATURE_SYNTH", "0.2"))
 
 
+def get_debug_deep() -> bool:
+    return (os.getenv("MIRASSIST_DEBUG_DEEP", "0") or "0").strip() == "1"
+
+
 def get_vllm_http_url() -> str | None:
     return _first_nonempty(os.getenv("MIRASSIST_VLLM_HTTP_URL"))
 

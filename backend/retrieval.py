@@ -11,7 +11,6 @@ import numpy as np
 import pandas as pd
 
 from backend.config import get_evidence_backend, get_evidence_table, resolve_evidence_path
-from backend.db import get_database_engine, quote_identifier
 
 
 # =============================================================================
@@ -36,6 +35,8 @@ def _load_evidence_postgres(
     table_name: str,
     columns: list[str] | None = None,
 ) -> pd.DataFrame:
+    from backend.db import get_database_engine, quote_identifier
+
     engine = get_database_engine()
     if engine is None:
         raise RuntimeError("DATABASE_URL is not configured for postgres evidence loading.")
@@ -173,8 +174,13 @@ def _safe_int_col(df: pd.DataFrame, col: str, default: int = 0) -> pd.Series:
 
 _ARM_RE = re.compile(r"(?i)(?:^|[-_])(3p|5p)$")
 _SPECIES_PREFIX_RE = re.compile(r"(?i)^(hsa|mmu|rno|dme|cel|ath)[-_]")
-_MICRORNA_PREFIX_RE = re.compile(r"(?i)^microrna[\s_-]*")  # includes non-ascii hyphen
+_MICRORNA_PREFIX_RE = re.compile(r"(?i)^microrna[\s_-]*")
+_MIRNA_WORD_PREFIX_RE = re.compile(r"(?i)^mirna[\s_-]*")
 _MIR_PREFIX_RE = re.compile(r"(?i)^(mir|miR|let|Let)")
+
+
+def _normalize_gene_symbol(value: Any) -> str:
+    return str(value or "").strip().upper()
 
 
 def _strip_species_prefix(s: str) -> str:
@@ -196,7 +202,8 @@ def _normalize_mirna_query(user_mirna: str) -> Tuple[str, Optional[str]]:
     s = re.sub(r"\s+", "", s)
 
     # strip "microRNA" textual prefix if present
-    s = _MICRORNA_PREFIX_RE.sub("", s)
+    s = _MICRORNA_PREFIX_RE.sub("mir-", s)
+    s = _MIRNA_WORD_PREFIX_RE.sub("mir-", s)
 
     # strip species prefix (hsa-/mmu- etc)
     s = _strip_species_prefix(s)
@@ -227,7 +234,8 @@ def _normalize_mirna_table_value(v: str) -> Tuple[str, Optional[str]]:
         return "", None
     s = s.replace("_", "-").replace("-", "-")
     s = re.sub(r"\s+", "", s)
-    s = _MICRORNA_PREFIX_RE.sub("", s)
+    s = _MICRORNA_PREFIX_RE.sub("mir-", s)
+    s = _MIRNA_WORD_PREFIX_RE.sub("mir-", s)
     s = _strip_species_prefix(s)
     s = s.lower()
 
@@ -284,13 +292,11 @@ def resolve_mirna_names_for_table(user_mirna: str, mirna_series: pd.Series) -> L
         h = hits_for(q_base, None)
         return sorted(set(h))
 
-    # no arm: prefer 5p, then base-only, then 3p
+    # no arm: match available arm-specific and base-only entries for this family
+    combined: List[str] = []
     for arm_try in ("5p", None, "3p"):
-        h = hits_for(q_base, arm_try)
-        if h:
-            return sorted(set(h))
-
-    return []
+        combined.extend(hits_for(q_base, arm_try))
+    return sorted(set(combined))
 
 
 # =============================================================================
@@ -460,12 +466,40 @@ def retrieve_candidates(
     ev: pd.DataFrame,
     query_token: str,
     cfg: RetrievalConfig,
-) -> Tuple[pd.DataFrame, str]:
+) -> Tuple[pd.DataFrame, str, Dict[str, Any]]:
     """
     Returns (shortlist_df, direction)
     """
-    query_token = _normalize_token(query_token)
+    query_token_raw = str(query_token or "")
+    query_token = _normalize_token(query_token_raw)
     direction = _direction_from_token(query_token)
+    diagnostics: Dict[str, Any] = {
+        "query_token": query_token_raw,
+        "direction": direction,
+        "query_mirna_raw": query_token_raw if direction == "mirna_to_targets" else None,
+        "query_mirna_normalized": None,
+        "query_gene_normalized": _normalize_gene_symbol(query_token) if direction == "gene_to_mirnas" else None,
+        "n_evidence_rows_total": int(len(ev)),
+        "n_after_novel_filter": int(len(ev)),
+        "n_after_min_support": int(len(ev)),
+        "matched_mirna_names": [],
+        "n_after_query_filter": 0,
+        "pathway_filter_enabled": bool((cfg.pathway_selection or {}).get("enabled")),
+        "n_selected_pathway_genes": 0,
+        "n_candidate_genes_before_pathway_filter": 0,
+        "n_candidate_genes_in_selected_pathways": 0,
+        "n_candidate_genes_removed_by_pathway_filter": 0,
+        "example_candidate_genes_before_filter": [],
+        "example_selected_pathway_genes": [],
+        "example_remaining_genes_after_filter": [],
+        "pathway_gene_normalization": "upper",
+        "n_after_pathway_filter": 0,
+        "n_after_collapse_duplicates": 0,
+        "n_final_shortlist": 0,
+        "warnings": [],
+    }
+    if direction == "mirna_to_targets":
+        diagnostics["query_mirna_normalized"] = _normalize_mirna_query(query_token)[0]
 
     _ensure_cols(ev, ["mirna_name", "gene_symbol", "support_count"])
     df = ev
@@ -476,11 +510,13 @@ def retrieve_candidates(
     # --- Novel mode (only hard exclude by design) ---
     if cfg.novel and "mirtarbase_pos" in df.columns:
         mask &= (_bool_col(df, "mirtarbase_pos") == 0)
+    diagnostics["n_after_novel_filter"] = int(mask.sum())
 
     # --- Minimal pre-filter ---
     if cfg.min_support > 0:
         sc = _safe_int_col(df, "support_count", default=0)
         mask &= (sc >= int(cfg.min_support))
+    diagnostics["n_after_min_support"] = int(mask.sum())
 
     # --- Optional soft gates ---
     if cfg.require_binding_evidence:
@@ -497,29 +533,40 @@ def retrieve_candidates(
 
     df = df.loc[mask].copy()
     if df.empty:
-        return df.head(0), direction
+        diagnostics["warnings"].append("No evidence rows remained after novelty/support/expression filters.")
+        return df.head(0), direction, diagnostics
 
     # --- Restrict by direction ---
     matched_tokens: List[str] = []
     if direction == "mirna_to_targets":
         allowed = resolve_mirna_names_for_table(query_token, df["mirna_name"])
         matched_tokens = allowed
+        diagnostics["matched_mirna_names"] = allowed[:20]
         if not allowed:
-            return df.head(0), direction
+            diagnostics["warnings"].append("No miRNA names in the evidence table matched the query after normalization.")
+            return df.head(0), direction, diagnostics
         allowed_l = {a.lower() for a in allowed}
         df = df[df["mirna_name"].astype(str).str.lower().isin(allowed_l)].copy()
     else:
-        df = df[df["gene_symbol"].astype(str).str.upper() == query_token.upper()].copy()
+        gene_norm = _normalize_gene_symbol(query_token)
+        df = df[df["gene_symbol"].astype(str).map(_normalize_gene_symbol) == gene_norm].copy()
         matched_tokens = [query_token]
+    diagnostics["n_after_query_filter"] = int(len(df))
 
     if df.empty:
-        return df.head(0), direction
+        if direction == "mirna_to_targets":
+            diagnostics["warnings"].append("The miRNA query matched no rows after table filtering.")
+        else:
+            diagnostics["warnings"].append("The gene query matched no rows after table filtering.")
+        return df.head(0), direction, diagnostics
 
     # --- Collapse duplicates so each (miRNA,gene) appears once ---
     if cfg.collapse_duplicates:
         df = _collapse_pair_rows(df)
         if df.empty:
-            return df.head(0), direction
+            diagnostics["warnings"].append("Rows were found, but none remained after duplicate collapse.")
+            return df.head(0), direction, diagnostics
+    diagnostics["n_after_collapse_duplicates"] = int(len(df))
 
     # --- Base scoring components ---
     support = _safe_float_col(df, "support_count", default=0.0)
@@ -571,16 +618,34 @@ def retrieve_candidates(
     pathway_bonus = pd.Series(np.zeros(len(df), dtype=float), index=df.index)
     pathway_selection = cfg.pathway_selection or {}
     pathway_enabled = bool(pathway_selection.get("enabled"))
-    pathway_gene_map = cfg.pathway_gene_map or {}
-    pathway_gene_set = {str(gene).upper() for gene in (cfg.pathway_gene_set or set())}
+    pathway_gene_map = {
+        _normalize_gene_symbol(gene): list(names or [])
+        for gene, names in (cfg.pathway_gene_map or {}).items()
+    }
+    pathway_gene_set = {_normalize_gene_symbol(gene) for gene in (cfg.pathway_gene_set or set())}
+    diagnostics["n_selected_pathway_genes"] = int(len(pathway_gene_set))
+    diagnostics["example_selected_pathway_genes"] = sorted(pathway_gene_set)[:20]
 
     if pathway_enabled:
         if not pathway_gene_set:
-            return df.head(0), direction
+            diagnostics["warnings"].append("Pathway filtering was enabled, but no genes were resolved from the selected pathways.")
+            return df.head(0), direction, diagnostics
 
-        df = df[df["gene_symbol"].astype(str).str.upper().isin(pathway_gene_set)].copy()
+        candidate_genes_before = sorted({_normalize_gene_symbol(gene) for gene in df["gene_symbol"].tolist() if str(gene or "").strip()})
+        remaining_genes = [gene for gene in candidate_genes_before if gene in pathway_gene_set]
+        diagnostics["n_candidate_genes_before_pathway_filter"] = int(len(candidate_genes_before))
+        diagnostics["n_candidate_genes_in_selected_pathways"] = int(len(remaining_genes))
+        diagnostics["n_candidate_genes_removed_by_pathway_filter"] = int(len(candidate_genes_before) - len(remaining_genes))
+        diagnostics["example_candidate_genes_before_filter"] = candidate_genes_before[:20]
+
+        df = df[df["gene_symbol"].astype(str).map(_normalize_gene_symbol).isin(pathway_gene_set)].copy()
+        diagnostics["example_remaining_genes_after_filter"] = sorted(
+            {_normalize_gene_symbol(gene) for gene in df["gene_symbol"].tolist() if str(gene or "").strip()}
+        )[:20]
+        diagnostics["n_after_pathway_filter"] = int(len(df))
         if df.empty:
-            return df.head(0), direction
+            diagnostics["warnings"].append("Pathway filtering removed all candidates.")
+            return df.head(0), direction, diagnostics
 
         support = _safe_float_col(df, "support_count", default=0.0)
         ts_ctx = _safe_float_col(df, "ts_best_contextpp", default=0.0)
@@ -617,6 +682,11 @@ def retrieve_candidates(
             + (0.8 * tcga_support_flag.astype(float))
             + (0.3 * tcga_repression_flag.astype(float))
         )
+    else:
+        diagnostics["n_after_pathway_filter"] = int(len(df))
+        diagnostics["example_remaining_genes_after_filter"] = sorted(
+            {_normalize_gene_symbol(gene) for gene in df["gene_symbol"].tolist() if str(gene or "").strip()}
+        )[:20]
 
     # --- Final score ---
     score = (
@@ -641,26 +711,27 @@ def retrieve_candidates(
         retrieval_tcga_p=tcga_p,
         retrieval_pathway_bonus=pathway_bonus,
         matched_query_tokens=";".join(matched_tokens),
-        pathway_selected_gene=df["gene_symbol"].astype(str).str.upper().isin(pathway_gene_set).astype(int),
-        pathway_match_count=df["gene_symbol"].astype(str).str.upper().map(
+        pathway_selected_gene=df["gene_symbol"].astype(str).map(_normalize_gene_symbol).isin(pathway_gene_set).astype(int),
+        pathway_match_count=df["gene_symbol"].astype(str).map(_normalize_gene_symbol).map(
             lambda gene: len(pathway_gene_map.get(gene, []))
         ),
-        pathway_selected_names=df["gene_symbol"].astype(str).str.upper().map(
+        pathway_selected_names=df["gene_symbol"].astype(str).map(_normalize_gene_symbol).map(
             lambda gene: pathway_gene_map.get(gene, [])
         ),
     )
 
     df = df.sort_values("retrieval_score", ascending=False)
     df = df.head(int(cfg.k_shortlist)).reset_index(drop=True)
+    diagnostics["n_final_shortlist"] = int(len(df))
 
-    return df, direction
+    return df, direction, diagnostics
 
 
 def retrieve_from_queryspec(
     ev: pd.DataFrame,
     queryspec: Dict[str, Any],
     pathway_selection: Optional[Dict[str, Any]] = None,
-) -> Tuple[pd.DataFrame, str]:
+) -> Tuple[pd.DataFrame, str, Dict[str, Any]]:
     """
     Wrapper expected by backend/app.py:
       queryspec -> RetrievalConfig -> retrieve_candidates
@@ -678,8 +749,15 @@ def retrieve_from_queryspec(
 
     filters = queryspec.get("filters") or {}
     pathway_selection = pathway_selection or queryspec.get("pathway_selection") or {}
-    pathway_gene_map = pathway_selection.get("selected_gene_pathways") or {}
-    pathway_gene_set = set(pathway_selection.get("selected_genes") or [])
+    pathway_gene_map = (
+        pathway_selection.get("_selected_gene_pathways")
+        or pathway_selection.get("selected_gene_pathways")
+        or {}
+    )
+    pathway_gene_set = (
+        pathway_selection.get("_selected_gene_set")
+        or set(pathway_selection.get("selected_genes") or [])
+    )
 
     cfg = RetrievalConfig(
         k_shortlist=int(queryspec.get("k", 200)),
@@ -690,9 +768,9 @@ def retrieve_from_queryspec(
         pathway_keywords=queryspec.get("pathway_keywords") or [],
         pathway_filter=queryspec.get("pathway_filter") or None,
         pathway_selection=pathway_selection,
-        pathway_gene_set={str(gene).upper() for gene in pathway_gene_set},
+        pathway_gene_set={_normalize_gene_symbol(gene) for gene in pathway_gene_set},
         pathway_gene_map={
-            str(gene).upper(): list(names or [])
+            _normalize_gene_symbol(gene): list(names or [])
             for gene, names in pathway_gene_map.items()
         },
         require_binding_evidence=bool(filters.get("require_binding_evidence", False)),

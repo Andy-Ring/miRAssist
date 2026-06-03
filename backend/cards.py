@@ -99,3 +99,37 @@ def cards_from_dataframe(df: pd.DataFrame, tcga: Optional[str] = None) -> List[D
         )
 
     return cards
+
+
+def cards_from_dataframe_with_diagnostics(
+    df: pd.DataFrame,
+    tcga: Optional[str] = None,
+) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    diagnostics: Dict[str, Any] = {
+        "n_shortlist_rows": int(0 if df is None else len(df)),
+        "n_cards_generated": 0,
+        "card_errors": [],
+    }
+    cards: List[Dict[str, Any]] = []
+    if df is None or len(df) == 0:
+        return cards, diagnostics
+
+    tcga = tcga.upper() if tcga else None
+
+    for idx, (_, row) in enumerate(df.iterrows()):
+        try:
+            row_df = pd.DataFrame([row.to_dict()])
+            row_cards = cards_from_dataframe(row_df, tcga=tcga)
+            if row_cards:
+                cards.extend(row_cards)
+            else:
+                diagnostics["card_errors"].append(
+                    f"Row {idx} produced no card for {row.get('gene_symbol') or row.get('mirna_name') or 'UNKNOWN'}."
+                )
+        except Exception as exc:
+            diagnostics["card_errors"].append(
+                f"Row {idx} failed during card generation: {exc}"
+            )
+
+    diagnostics["n_cards_generated"] = int(len(cards))
+    return cards, diagnostics

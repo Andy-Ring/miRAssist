@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, Dict
 
 from backend.config import get_planner_model, get_planner_temperature
-from backend.llm_backend import chat
 
 
 PLANNER_SYSTEM_PROMPT = """You are miRAssist's planner.
@@ -67,6 +67,50 @@ NOTES:
 - "pathway_filter.enabled" should be true if phenotype or pathway context is implied, and if enabled its mode must always be "filter".
 - Do not invent genes or gene-pathway memberships.
 """
+
+_CANCER_TCGA_RULES = [
+    (re.compile(r"\bbreast\b", re.IGNORECASE), "BRCA", "breast cancer"),
+    (re.compile(r"\b(colon|colorectal)\b", re.IGNORECASE), "COAD", "colon cancer"),
+    (re.compile(r"\bprostate\b", re.IGNORECASE), "PRAD", "prostate cancer"),
+]
+
+
+def _normalize_cancer_context(qs: Dict[str, Any]) -> None:
+    cancer = qs.get("cancer") or {}
+    name = str(cancer.get("name") or "").strip()
+    tcga = str(cancer.get("tcga") or "").strip().upper()
+
+    if not name and not tcga:
+        return
+
+    for pattern, mapped_tcga, canonical_name in _CANCER_TCGA_RULES:
+        haystack = name or tcga
+        if pattern.search(haystack):
+            cancer["name"] = canonical_name
+            cancer["tcga"] = mapped_tcga
+            qs["cancer"] = cancer
+            return
+
+    if tcga:
+        cancer["tcga"] = tcga
+        qs["cancer"] = cancer
+
+
+def _normalize_optional_clarifications(qs: Dict[str, Any]) -> None:
+    needs = [str(item).strip() for item in (qs.get("needs_clarification") or []) if str(item).strip()]
+    if not needs:
+        qs["needs_clarification"] = []
+        qs.setdefault("optional_clarifications", [])
+        return
+
+    is_actionable = bool(qs.get("mirna") or qs.get("gene"))
+    if not is_actionable:
+        qs["needs_clarification"] = needs
+        qs.setdefault("optional_clarifications", [])
+        return
+
+    qs["optional_clarifications"] = list(dict.fromkeys(needs + list(qs.get("optional_clarifications") or [])))
+    qs["needs_clarification"] = []
 
 
 def _json_from_text(text: str) -> Dict[str, Any]:
@@ -146,6 +190,7 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
     qs["filters"].setdefault("require_expression", False)
 
     qs.setdefault("needs_clarification", [])
+    qs.setdefault("optional_clarifications", [])
 
     # Type coercion safety
     try:
@@ -177,6 +222,9 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
     qs["pathway_filter"]["enabled"] = pathway_enabled
     qs["pathway_filter"]["mode"] = "filter"
 
+    _normalize_cancer_context(qs)
+    _normalize_optional_clarifications(qs)
+
     return qs
 
 
@@ -184,6 +232,8 @@ def run_planner(question: str) -> Dict[str, Any]:
     """
     Main entrypoint used by the FastAPI backend.
     """
+    from backend.llm_backend import chat
+
     question = (question or "").strip()
     if not question:
         raise ValueError("Question is empty.")

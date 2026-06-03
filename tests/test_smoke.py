@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from backend.app import app
 from backend.jobstore import read_job, write_job
+from backend.worker import run_query_job
 
 
 class FileSystemJobStoreTests(unittest.TestCase):
@@ -158,6 +159,86 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertIn("shortlist", result)
         self.assertIn("bundle", result)
         self.assertIn("answer", result)
+
+
+class WorkerDiagnosticTests(unittest.TestCase):
+    def test_empty_shortlist_returns_backend_diagnostic_without_synth_call(self) -> None:
+        qs = {
+            "original_question": "I am studying miRNA-210 in breast cancer cells. I think it might be involved in energy metabolism. What genes might it be regulating?",
+            "mode": "mirna_to_targets",
+            "mirna": "miRNA-210",
+            "gene": None,
+            "cancer": {"name": "breast cancer", "tcga": "BRCA"},
+            "phenotype_context": {
+                "phenotype": "energy metabolism",
+                "direction": "associated",
+                "raw_phrase": "involved in energy metabolism",
+            },
+            "pathway_selection_request": {
+                "enabled": True,
+                "query_terms": ["energy metabolism"],
+                "directional_query_terms": [],
+                "strict": True,
+            },
+            "phenotype_keywords": ["energy metabolism"],
+            "pathway_keywords": [],
+            "pathway_filter": {"enabled": True, "mode": "filter", "min_gene_sets": 1},
+            "novel": False,
+            "k": 10,
+            "filters": {
+                "min_support": 1,
+                "require_binding_evidence": False,
+                "require_expression": False,
+            },
+            "needs_clarification": [],
+        }
+        pathway_selection = {
+            "enabled": True,
+            "mode": "filter",
+            "phenotype": "energy metabolism",
+            "direction": "associated",
+            "query_terms": ["energy metabolism", "glycolysis", "oxidative phosphorylation"],
+            "selected_pathways": [{"pathway_id": "H:1", "pathway_name": "HALLMARK_GLYCOLYSIS", "matched_terms": ["glycolysis"]}],
+            "n_selected_pathways": 1,
+            "n_selected_genes": 1,
+            "selected_gene_examples": ["LDHA"],
+            "warnings": [],
+            "_selected_gene_set": {"LDHA"},
+            "_selected_gene_pathways": {"LDHA": ["HALLMARK_GLYCOLYSIS"]},
+        }
+        ev = pd.DataFrame(
+            [
+                {"mirna_name": "miR-21", "gene_symbol": "TP53", "support_count": 2, "ts_best_contextpp": -0.2},
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "JOBSTORE_BACKEND": "filesystem",
+                "MIRASSIST_JOB_DIR": tmpdir,
+            },
+            clear=False,
+        ), patch("backend.worker.run_planner", return_value=qs), patch(
+            "backend.worker.resolve_pathway_selection", return_value=pathway_selection
+        ), patch("backend.worker.load_evidence", return_value=ev), patch(
+            "backend.worker.run_synthesizer"
+        ) as synth_mock:
+            result = run_query_job(
+                query_id="job-empty-shortlist",
+                question=qs["original_question"],
+                k=10,
+                min_support=1,
+                novel=False,
+                require_binding_evidence=False,
+                require_expression=False,
+                pathway_mode="auto",
+            )
+
+        self.assertEqual(result["status"], "done")
+        self.assertEqual(result["retrieval_diagnostics"]["n_final_shortlist"], 0)
+        self.assertIn("No candidates passed the current filters.", result["answer"]["summary"])
+        synth_mock.assert_not_called()
 
 
 @unittest.skipUnless(os.environ.get("DATABASE_URL"), "DATABASE_URL is not set")

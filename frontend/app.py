@@ -106,7 +106,7 @@ st.markdown(
 
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.7.2"
+APP_VERSION = "0.7.3"
 APP_AUTHOR = "Andy Ring"
 
 
@@ -870,11 +870,26 @@ if result:
                         "selected_pathways": pathway_selection.get("selected_pathways"),
                         "n_selected_pathways": pathway_selection.get("n_selected_pathways"),
                         "n_selected_genes": pathway_selection.get("n_selected_genes"),
+                        "selected_gene_examples": pathway_selection.get("selected_gene_examples"),
                         "warnings": pathway_selection.get("warnings"),
                     }
                 )
             else:
                 st.info("No pathway filtering applied.")
+
+        with st.expander("Retrieval diagnostics", expanded=False):
+            retrieval_diagnostics = result.get("retrieval_diagnostics") or {}
+            if retrieval_diagnostics:
+                st.json(retrieval_diagnostics)
+            else:
+                st.info("No retrieval diagnostics were included in the result payload.")
+
+        with st.expander("Card generation diagnostics", expanded=False):
+            card_generation_diagnostics = result.get("card_generation_diagnostics") or {}
+            if card_generation_diagnostics:
+                st.json(card_generation_diagnostics)
+            else:
+                st.info("No card generation diagnostics were included in the result payload.")
 
         with st.expander("Evidence shortlist (optional)", expanded=False):
             shortlist = result.get("shortlist", [])

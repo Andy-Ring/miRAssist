@@ -1,16 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import traceback
 from typing import Any, Dict
-
-from backend.feature_stats import annotate_feature_percentiles
-from backend.jobstore import write_job
-from backend.pathways import resolve_pathway_selection
-from backend.planner import run_planner
-from backend.prompting import build_prompt_bundle
-from backend.retrieval import load_evidence, retrieve_from_queryspec
-from backend.synthesizer import run_synthesizer
 
 
 def _apply_query_overrides(
@@ -79,6 +72,15 @@ def run_query_job(
     require_expression: bool = False,
     pathway_mode: str = "auto",
 ) -> Dict[str, Any]:
+    from backend.cards import cards_from_dataframe_with_diagnostics
+    from backend.feature_stats import annotate_feature_percentiles
+    from backend.jobstore import write_job
+    from backend.pathways import compact_pathway_selection, resolve_pathway_selection
+    from backend.planner import run_planner
+    from backend.prompting import build_prompt_bundle
+    from backend.retrieval import load_evidence, retrieve_from_queryspec
+    from backend.synthesizer import run_synthesizer
+
     try:
         write_job(query_id, {"status": "running", "stage": "planner"})
 
@@ -92,12 +94,13 @@ def run_query_job(
             require_expression=require_expression,
             pathway_mode=pathway_mode,
         )
-        pathway_selection = resolve_pathway_selection(qs)
+        pathway_selection_internal = resolve_pathway_selection(qs)
         if qs.get("debug_warnings"):
-            pathway_selection.setdefault("warnings", [])
+            pathway_selection_internal.setdefault("warnings", [])
             for warning in qs["debug_warnings"]:
-                if warning not in pathway_selection["warnings"]:
-                    pathway_selection["warnings"].append(warning)
+                if warning not in pathway_selection_internal["warnings"]:
+                    pathway_selection_internal["warnings"].append(warning)
+        pathway_selection = compact_pathway_selection(pathway_selection_internal)
         qs["pathway_selection"] = pathway_selection
 
         write_job(
@@ -111,16 +114,50 @@ def run_query_job(
         )
 
         ev = load_evidence()
-        shortlist_df, direction = retrieve_from_queryspec(ev, qs, pathway_selection=pathway_selection)
+        shortlist_df, direction, retrieval_diagnostics = retrieve_from_queryspec(
+            ev,
+            qs,
+            pathway_selection=pathway_selection_internal,
+        )
         shortlist_df = annotate_feature_percentiles(shortlist_df, ev)
         shortlist_records = shortlist_df.to_dict(orient="records")
+        tcga = ((qs.get("cancer") or {}).get("tcga") or qs.get("tcga"))
+        cards, card_generation_diagnostics = cards_from_dataframe_with_diagnostics(shortlist_df, tcga=tcga)
 
         bundle = build_prompt_bundle(
             queryspec=qs,
             shortlist=shortlist_df,
+            cards=cards,
             direction=direction,
-            meta={"queryspec": qs, "pathway_selection": pathway_selection},
+            meta={
+                "queryspec": qs,
+                "pathway_selection": pathway_selection,
+                "retrieval_diagnostics": retrieval_diagnostics,
+                "card_generation_diagnostics": card_generation_diagnostics,
+            },
+            retrieval_diagnostics=retrieval_diagnostics,
         )
+
+        if len(shortlist_df) > 0 and not cards:
+            raise RuntimeError(
+                "Shortlist rows were produced, but card generation returned zero evidence cards. "
+                f"Diagnostics: {json.dumps(card_generation_diagnostics, ensure_ascii=False)}"
+            )
+
+        if not cards:
+            diagnostics_bits = list(retrieval_diagnostics.get("warnings") or [])
+            if pathway_selection.get("warnings"):
+                diagnostics_bits.extend(pathway_selection.get("warnings") or [])
+            summary = "No candidates passed the current filters."
+            if diagnostics_bits:
+                summary += " Diagnostics: " + "; ".join(dict.fromkeys(diagnostics_bits))
+            answer_obj = {
+                "raw_text": summary,
+                "summary": summary,
+                "suggested_experiments": [],
+            }
+        else:
+            answer_obj = None
 
         write_job(
             query_id,
@@ -129,18 +166,23 @@ def run_query_job(
                 "stage": "synthesis",
                 "queryspec": qs,
                 "pathway_selection": pathway_selection,
+                "retrieval_diagnostics": retrieval_diagnostics,
+                "card_generation_diagnostics": card_generation_diagnostics,
                 "shortlist": shortlist_records,
                 "bundle": bundle,
             },
         )
 
-        answer_obj = run_synthesizer(bundle)
+        if answer_obj is None:
+            answer_obj = run_synthesizer(bundle)
 
         final_payload = {
             "status": "done",
             "stage": "done",
             "queryspec": qs,
             "pathway_selection": pathway_selection,
+            "retrieval_diagnostics": retrieval_diagnostics,
+            "card_generation_diagnostics": card_generation_diagnostics,
             "shortlist": shortlist_records,
             "bundle": bundle,
             "answer": answer_obj,
