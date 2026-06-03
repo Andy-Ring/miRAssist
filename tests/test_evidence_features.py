@@ -139,6 +139,8 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertIn("Evidence categories:", bundle["user_prompt"])
         self.assertIn("Key pieces of evidence", bundle["system_prompt"])
         self.assertIn("Pathways:", bundle["user_prompt"])
+        self.assertIn("Overall priority", bundle["system_prompt"])
+        self.assertIn("breadth, not strength", bundle["system_prompt"])
 
     def test_evidence_support_count_uses_categories_not_percentiles(self) -> None:
         row = pd.Series(
@@ -290,6 +292,38 @@ class FeaturePercentileTests(unittest.TestCase):
         sections = build_evidence_sections(row)
         self.assertIsNone(sections["primary_seed_evidence"])
         self.assertEqual(sections["seed_site_evidence"], [])
+
+    def test_priority_fields_distinguish_breadth_and_strength(self) -> None:
+        broad_but_weak = pd.Series(
+            {
+                "mirdb_best_score": 60.0,
+                "mirdb_best_score_label": "typical",
+                "ts_context_strength": 0.1,
+                "ts_context_strength_label": "typical",
+                "clip_exp_sum": 4.0,
+                "clip_exp_sum_label": "typical",
+                "pathway_selected_gene": 1,
+                "pathway_selected_names": ["HALLMARK_GLYCOLYSIS"],
+            }
+        )
+        fewer_but_strong = pd.Series(
+            {
+                "mirdb_best_score": 95.0,
+                "mirdb_best_score_label": "exceptional",
+                "ts_context_strength": 0.93,
+                "ts_context_strength_label": "exceptional",
+                "clip_exp_sum": 25.0,
+                "clip_exp_sum_label": "exceptional",
+            }
+        )
+
+        weak_sections = build_evidence_sections(broad_but_weak)
+        strong_sections = build_evidence_sections(fewer_but_strong)
+
+        self.assertEqual(weak_sections["overall_priority_tier"], "Exploratory")
+        self.assertIn("broad support", weak_sections["evidence_strength_summary"])
+        self.assertEqual(strong_sections["overall_priority_tier"], "Strong")
+        self.assertIn("strong values", strong_sections["evidence_strength_summary"])
 
 
 if __name__ == "__main__":

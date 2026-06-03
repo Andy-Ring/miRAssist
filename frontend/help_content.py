@@ -5,6 +5,13 @@ def should_show_api_connection_controls(app_mode: str) -> bool:
     return str(app_mode or "").strip().lower() == "api"
 
 
+def get_normal_debug_sections() -> list[str]:
+    return [
+        "Planner output (QuerySpec)",
+        "Evidence shortlist",
+    ]
+
+
 def get_how_to_use_markdown() -> str:
     return """
 miRAssist prioritizes candidate miRNA-target interactions using curated evidence, published prediction models, CLIP/binding evidence, seed/site features, structure-aware features, TCGA context, and pathway filtering.
@@ -29,9 +36,11 @@ How cancer context works:
 
 How to interpret results:
 - Evidence support count = number of distinct evidence categories, not number of raw features.
+- Evidence support count measures breadth, not strength.
 - Percentiles show whether a feature is unusually high across the database.
 - miRTarBase is curated prior evidence.
-- The model will rank potential MTIs from the number (k) MTIs that are returned from the database after backend scoring.
+- Overall priority considers both evidence breadth and evidence strength.
+- By default, miRAssist returns the top 5 ranked candidates unless you request more.
 
 Novel mode:
 - Novel mode excludes known miRTarBase functional interactions from the ranked list.

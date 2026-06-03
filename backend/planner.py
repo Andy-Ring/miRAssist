@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Dict
 
-from backend.config import get_planner_model, get_planner_temperature
+from backend.config import get_default_k, get_planner_model, get_planner_temperature
 
 
 PLANNER_SYSTEM_PROMPT = """You are miRAssist's planner.
@@ -181,7 +181,7 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
     qs["pathway_filter"].setdefault("min_gene_sets", 1)
 
     qs.setdefault("novel", False)
-    qs.setdefault("k", 50)
+    qs.setdefault("k", get_default_k())
 
     # Filters
     qs.setdefault("filters", {})
@@ -196,7 +196,7 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
     try:
         qs["k"] = int(qs["k"])
     except Exception:
-        qs["k"] = 50
+        qs["k"] = get_default_k()
 
     try:
         qs["filters"]["min_support"] = int(qs["filters"]["min_support"])

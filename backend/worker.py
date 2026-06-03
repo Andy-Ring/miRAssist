@@ -5,6 +5,8 @@ import json
 import traceback
 from typing import Any, Dict
 
+from backend.config import get_default_k
+
 
 def _apply_query_overrides(
     *,
@@ -18,7 +20,18 @@ def _apply_query_overrides(
 ) -> Dict[str, Any]:
     qs = dict(queryspec)
     debug_warnings = list(qs.get("debug_warnings") or [])
-    qs["k"] = int(k)
+    ui_k = int(k)
+    planner_k = qs.get("k")
+    default_k = get_default_k()
+    if planner_k in (None, ""):
+        qs["k"] = ui_k
+    elif ui_k != default_k:
+        qs["k"] = ui_k
+    else:
+        try:
+            qs["k"] = int(planner_k)
+        except Exception:
+            qs["k"] = default_k
     qs.setdefault("filters", {})
     qs["filters"]["min_support"] = int(min_support)
     qs["novel"] = bool(novel)

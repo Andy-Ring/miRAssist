@@ -126,6 +126,116 @@ def _best_seed_summary(row: pd.Series) -> Optional[str]:
     return f"best seed class {best_seed}"
 
 
+def _label_rank(label: Any) -> int:
+    mapping = {
+        "exceptional": 5,
+        "very high": 4,
+        "high": 3,
+        "above average": 2,
+        "typical": 1,
+        "low": 0,
+        "not available": -1,
+    }
+    return mapping.get(str(label or "").strip().lower(), -1)
+
+
+def _has_high_strength_signal(row: pd.Series) -> bool:
+    checks = [
+        _label_rank(row.get("mirdb_best_score_label")) >= 3,
+        _label_rank(row.get("ts_context_strength_label")) >= 3,
+        _label_rank(row.get("clip_exp_sum_label")) >= 3,
+        _label_rank(row.get("n_clip_sites_label")) >= 3,
+        _label_rank(row.get("mfe_strength_label")) >= 3,
+        _label_rank(row.get("BRCA_anticorrelation_strength_label")) >= 3,
+        _label_rank(row.get("COAD_anticorrelation_strength_label")) >= 3,
+        _label_rank(row.get("PRAD_anticorrelation_strength_label")) >= 3,
+        _as_float(row.get("mirdb_best_score")) >= 80,
+    ]
+    return any(checks)
+
+
+def _has_very_strong_signal(row: pd.Series) -> bool:
+    checks = [
+        _label_rank(row.get("mirdb_best_score_label")) >= 4,
+        _label_rank(row.get("ts_context_strength_label")) >= 4,
+        _label_rank(row.get("clip_exp_sum_label")) >= 4,
+        _label_rank(row.get("n_clip_sites_label")) >= 4,
+        _label_rank(row.get("mfe_strength_label")) >= 4,
+        _as_float(row.get("mirdb_best_score")) >= 90,
+    ]
+    return any(checks)
+
+
+def _context_signal_state(row: pd.Series, tcga: Optional[str]) -> str:
+    if not tcga:
+        return "not_requested"
+    rho = _as_float(row.get(f"{tcga}_spearman_rho"))
+    support_tcga = _as_int(row.get(f"{tcga}_support_tcga"), 0)
+    repression_flag = _as_int(row.get(f"{tcga}_repression_evidence"), 0)
+    if support_tcga == 1 or repression_flag == 1 or (np.isfinite(rho) and rho < 0):
+        return "supportive"
+    if np.isfinite(rho) and rho >= 0:
+        return "not_supportive"
+    return "missing"
+
+
+def _compute_priority_fields(
+    row: pd.Series,
+    tcga: Optional[str],
+    evidence_categories: Dict[str, bool],
+    evidence_support_count: int,
+) -> Dict[str, str]:
+    context_state = _context_signal_state(row, tcga)
+    high_strength = _has_high_strength_signal(row)
+    very_strong = _has_very_strong_signal(row)
+    has_curated = bool(evidence_categories.get("curated_validation"))
+    has_model = bool(evidence_categories.get("mirdb_model") or evidence_categories.get("targetscan_model"))
+    has_binding = bool(evidence_categories.get("clip_binding"))
+
+    if context_state == "not_supportive" and (has_model or has_binding or has_curated):
+        overall_priority = "Conflicting context"
+        context_strength = "Not supportive"
+        strength_tier = "Moderate" if high_strength else "Weak"
+        summary = "strong model or binding support, but the requested cancer-context evidence is not supportive"
+    elif tcga and context_state == "missing" and (has_model or has_binding):
+        overall_priority = "Context-limited"
+        context_strength = "Unavailable"
+        strength_tier = "Moderate" if high_strength else "Weak"
+        summary = "model or binding support is present, but context-specific evidence is limited"
+    elif has_curated or (very_strong and evidence_support_count >= 3 and (has_binding or evidence_categories.get("tcga_context"))):
+        overall_priority = "Strong"
+        context_strength = "Supportive" if context_state == "supportive" else "Not requested"
+        strength_tier = "Strong"
+        summary = "broad support with strong values across key evidence categories"
+    elif evidence_support_count >= 3 and high_strength:
+        overall_priority = "Moderate"
+        context_strength = "Supportive" if context_state == "supportive" else ("Unavailable" if context_state == "missing" else "Not requested")
+        strength_tier = "Strong"
+        summary = "fewer categories than the top tier, but stronger values in the available evidence"
+    elif evidence_support_count >= 4:
+        overall_priority = "Exploratory"
+        context_strength = "Supportive" if context_state == "supportive" else ("Unavailable" if context_state == "missing" else "Not requested")
+        strength_tier = "Moderate"
+        summary = "broad support across categories, but most values are weak or typical"
+    elif evidence_support_count >= 2:
+        overall_priority = "Exploratory"
+        context_strength = "Supportive" if context_state == "supportive" else ("Unavailable" if context_state == "missing" else "Not requested")
+        strength_tier = "Moderate" if high_strength else "Weak"
+        summary = "some support is present, but the evidence remains exploratory"
+    else:
+        overall_priority = "Weak/context-limited"
+        context_strength = "Supportive" if context_state == "supportive" else ("Unavailable" if context_state == "missing" else "Not requested")
+        strength_tier = "Weak"
+        summary = "limited support is available in this record"
+
+    return {
+        "evidence_strength_summary": summary,
+        "evidence_strength_tier": strength_tier,
+        "context_strength_tier": context_strength,
+        "overall_priority_tier": overall_priority,
+    }
+
+
 def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[str, Any]:
     target_evidence: List[str] = []
     published_model_evidence: List[str] = []
@@ -357,12 +467,17 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
         label for key, label in EVIDENCE_CATEGORY_LABELS.items() if evidence_categories.get(key)
     ]
     evidence_support_count = int(sum(1 for present in evidence_categories.values() if present))
+    priority_fields = _compute_priority_fields(row, tcga, evidence_categories, evidence_support_count)
 
     sections = {
         "support_count": support_count,
         "evidence_categories": evidence_categories,
         "evidence_categories_present": evidence_categories_present,
         "evidence_support_count": evidence_support_count,
+        "evidence_strength_summary": priority_fields["evidence_strength_summary"],
+        "evidence_strength_tier": priority_fields["evidence_strength_tier"],
+        "context_strength_tier": priority_fields["context_strength_tier"],
+        "overall_priority_tier": priority_fields["overall_priority_tier"],
         "number_of_features_supporting_interaction": evidence_support_count,
         "primary_curated_evidence": primary_evidence_by_category["curated"],
         "primary_mirdb_evidence": primary_evidence_by_category["mirdb"],

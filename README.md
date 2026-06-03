@@ -23,6 +23,7 @@ MIRASSIST_LLM_BACKEND=openai
 OPENAI_API_KEY=...
 MIRASSIST_PLANNER_MODEL=gpt-5.4-nano
 MIRASSIST_SYNTH_MODEL=gpt-5.4-mini
+MIRASSIST_SYNTH_MAX_TOKENS=2500
 JOBSTORE_BACKEND=postgres
 DATABASE_URL=...
 EVIDENCE_BACKEND=postgres
@@ -62,6 +63,7 @@ The default direct-mode UI is intentionally standalone:
 - No backend connection box is shown in the app
 - The sidebar includes `How to use miRAssist` and `About evidence` help sections
 - API connection controls remain available only when `MIRASSIST_APP_MODE=api`
+- Normal users only see the final answer plus `Planner output (QuerySpec)` and `Evidence shortlist`
 
 ## Optional API mode
 
@@ -100,6 +102,7 @@ Notes:
 
 - The planner defaults to the cheaper `gpt-5.4-nano`.
 - The synthesizer defaults to the stronger `gpt-5.4-mini`.
+- The synthesizer output budget defaults to `MIRASSIST_SYNTH_MAX_TOKENS=2500`.
 - To switch synthesis later without code changes, set `MIRASSIST_SYNTH_MODEL=gpt-5.5`.
 - Optional overrides include `MIRASSIST_OPENAI_BASE_URL`, `MIRASSIST_OPENAI_TIMEOUT`, `MIRASSIST_OPENAI_TEMPERATURE_PLANNER`, and `MIRASSIST_OPENAI_TEMPERATURE_SYNTH`.
 
@@ -149,6 +152,13 @@ The evidence cards now distinguish different evidence types:
 
 The LLM is instructed to use these backend-provided values and labels exactly as given. It must not calculate percentiles, invent pathway membership, or add unsupported gene-phenotype claims.
 
+Evidence breadth versus strength:
+
+- `Evidence support count` measures breadth across distinct evidence categories.
+- `Overall priority` considers both breadth and the strength of the underlying values.
+- A candidate with fewer categories can still rank higher if those categories are strong.
+- A candidate with more categories can still be exploratory if most values are weak or typical.
+
 ## Grounded pathway filtering
 
 miRAssist now treats pathway and phenotype context as grounded database filters rather than LLM-generated gene annotations.
@@ -181,19 +191,7 @@ The backend auto-creates a `mirassist_jobs` table with:
 
 If `JOBSTORE_BACKEND=postgres` is set without `DATABASE_URL`, the app falls back to filesystem storage for development.
 
-## App diagnostics
-
-In direct mode, the Streamlit sidebar includes an app diagnostics panel showing:
-
-- `app_mode`
-- `llm_backend`
-- `planner_model`
-- `synth_model`
-- `openai_configured`
-- `jobstore_backend`
-- `evidence_backend`
-- `database_configured`
-- whether `BACKEND_URL` is being used
+By default, miRAssist returns the top 5 ranked candidates. Users can request more by changing the `Number of results` control or explicitly asking for a larger top-N in the prompt.
 
 ## Environment templates
 
@@ -216,6 +214,8 @@ Artifacts kept for that path:
 - [scripts/deploy_cloud_run.sh](C:\Users\andym\OneDrive - University of Georgia\Documents\miRAssist\scripts\deploy_cloud_run.sh)
 
 That path is no longer required for the first Posit deployment.
+
+The FastAPI/API mode is now primarily developer-only. Normal deployment should use Posit direct mode with OpenAI and Supabase.
 
 ## Smoke checks
 

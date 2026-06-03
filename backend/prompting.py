@@ -30,6 +30,12 @@ Hard rules:
 - Use at most one primary metric per evidence category unless the card explicitly marks additional metrics as nonredundant.
 - Do not list best/mean/max variants of the same evidence type as separate key evidence unless the card makes that necessary.
 - Do not include low or absent evidence as a key evidence line unless it is an important caveat.
+- Evidence support count measures breadth, not strength.
+- A candidate with fewer categories may still be more compelling if those categories are strong.
+- A candidate with more categories may still be exploratory if the values are weak or typical.
+- When explaining rankings, mention both evidence breadth and evidence strength.
+- Do not call a candidate "strongest" solely because it has more categories.
+- If the backend provides `overall_priority_tier`, use it.
 - Do not describe computational predictions as experimental validation.
 
 Evidence interpretation rules:
@@ -60,12 +66,13 @@ Required output format:
 - For each result use this format:
 
 ### 1. GENE_OR_MIRNA
+- **Overall priority:** Strong / Moderate / Exploratory / Context-limited / Conflicting context
 - **Evidence support count:** X categories
 - **Evidence categories:** miRTarBase; miRDB; TargetScan; CLIP; TCGA context; Pathway
 - **Pathways:** pathway names if pathway filtering was applied, otherwise "Not pathway-filtered"
 - **Key pieces of evidence:**
   - grouped by evidence category, with one primary metric per category and percentiles treated only as modifiers
-- **Explanation:** 2-4 sentences grounded only in the evidence card
+- **Interpretation:** 2-4 sentences grounded only in the evidence card, explicitly distinguishing evidence breadth from evidence strength
 
 ## Final recommendation
 - A short paragraph saying which 1-3 candidates are best for follow-up and why.
@@ -146,6 +153,9 @@ Requirements:
 - Do not count raw values and percentiles separately.
 - Use at most one primary metric per evidence category unless the card explicitly marks additional metrics as nonredundant.
 - Keep "Key pieces of evidence" compact and grouped by category.
+- Evidence support count means breadth, not strength.
+- A candidate with fewer categories may still rank highly if those categories are strong.
+- A candidate with more categories may still be lower confidence if most values are weak or typical.
 - Do not invent percentiles, feature strength labels, pathway membership, or gene-phenotype links.
 - Do not claim a candidate belongs to a pathway unless the card explicitly says it passed the pathway filter or names the pathways.
 - Use the required output structure from the system prompt.
@@ -186,13 +196,21 @@ Evidence cards:
         primary_structure = card.get("primary_structure_evidence")
         primary_tcga = card.get("primary_tcga_evidence")
         primary_pathway = card.get("primary_pathway_evidence")
+        evidence_strength_summary = card.get("evidence_strength_summary") or "None"
+        evidence_strength_tier = card.get("evidence_strength_tier") or "None"
+        context_strength_tier = card.get("context_strength_tier") or "None"
+        overall_priority_tier = card.get("overall_priority_tier") or "None"
         block = [
             f"Candidate {index}: {card.get('name', 'UNKNOWN')}",
             f"miRNA: {card.get('mirna_name', '')}",
             f"Gene: {card.get('gene_symbol', '')}",
             f"Support count: {card.get('support_count', 0)}",
+            f"Overall priority: {overall_priority_tier}",
             f"Evidence support count: {card.get('evidence_support_count', card.get('number_of_features_supporting_interaction', 0))} categories",
             "Evidence categories: " + ("; ".join(evidence_categories_present) if evidence_categories_present else "None"),
+            f"Evidence strength tier: {evidence_strength_tier}",
+            f"Context strength tier: {context_strength_tier}",
+            f"Evidence strength summary: {evidence_strength_summary}",
             "Pathways: " + ("; ".join(pathway_names) if pathway_names else "Not pathway-filtered"),
             "Curated evidence: " + (primary_curated or "None"),
             "miRDB evidence: " + (primary_mirdb or "None"),

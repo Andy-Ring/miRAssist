@@ -176,8 +176,20 @@ def get_synth_temperature() -> float:
     return float(os.getenv("MIRASSIST_OPENAI_TEMPERATURE_SYNTH", "0.2"))
 
 
+def get_synth_max_tokens() -> int:
+    return int(os.getenv("MIRASSIST_SYNTH_MAX_TOKENS", "2500"))
+
+
 def get_debug_deep() -> bool:
     return (os.getenv("MIRASSIST_DEBUG_DEEP", "0") or "0").strip() == "1"
+
+
+def get_debug_ui() -> bool:
+    return (os.getenv("MIRASSIST_DEBUG_UI", "0") or "0").strip() == "1" or get_debug_deep()
+
+
+def get_default_k() -> int:
+    return int(os.getenv("MIRASSIST_DEFAULT_K", "5"))
 
 
 def get_vllm_http_url() -> str | None:
@@ -196,6 +208,6 @@ MODEL_NAME = get_model_name()
 PLANNER_MODEL = get_planner_model()
 SYNTH_MODEL = get_synth_model()
 MAX_PROMPT_TOKENS = int(os.getenv("MIRASSIST_MAX_PROMPT_TOKENS", "6500"))
-DEFAULT_K = int(os.getenv("MIRASSIST_DEFAULT_K", "50"))
+DEFAULT_K = get_default_k()
 DEFAULT_MIN_SUPPORT = int(os.getenv("MIRASSIST_DEFAULT_MIN_SUPPORT", "1"))
 EVIDENCE_PATH = resolve_evidence_path()
