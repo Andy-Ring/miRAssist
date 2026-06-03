@@ -698,7 +698,6 @@ with st.sidebar:
 
 st.subheader("Enter your prompt")
 question = st.text_area(
-    "Question",
     placeholder="Example: I overexpressed miR-21 and saw increased proliferation in colon cancer cells. What might it regulate?",
     height=120,
 )
