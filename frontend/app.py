@@ -111,7 +111,7 @@ st.markdown(
 
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.7.5"
+APP_VERSION = "0.7.6"
 APP_AUTHOR = "Andy Ring"
 
 
@@ -714,8 +714,8 @@ st.caption(
 c1, c2, c3 = st.columns(3)
 with c1:
     novel = st.checkbox(
-        "Novel mode (override)",
-        value=True,
+        "Novel mode",
+        value=False,
         help=(
             "If enabled, miRAssist will avoid labeling miRTarBase functional positives as 'novel'. "
             "It may still mention known targets."
@@ -723,35 +723,21 @@ with c1:
     )
 with c2:
     k = st.number_input(
-        "k (override)",
+        "k",
         min_value=5,
         max_value=200,
-        value=25,
+        value=10,
         step=5,
         help="How many candidates to retrieve before synthesis.",
     )
 with c3:
     min_support = st.number_input(
-        "Min support (override)",
+        "Min support",
         min_value=1,
         max_value=10,
         value=2,
         step=1,
         help="Minimum number of supporting evidence channels required to keep a pair.",
-    )
-
-c4, c5 = st.columns(2)
-with c4:
-    require_binding = st.checkbox(
-        "Require binding evidence (override)",
-        value=False,
-        help="If enabled, only keep pairs with binding-type evidence, e.g. CLIP/TargetScan/miRDB.",
-    )
-with c5:
-    require_expression = st.checkbox(
-        "Require expression evidence (override)",
-        value=False,
-        help="If enabled, require miRNA and gene expression evidence where available.",
     )
 
 run_disabled = not question.strip() or (APP_MODE == "api" and not st.session_state.get("api_url"))
@@ -767,8 +753,8 @@ if run:
             "novel": bool(novel),
             "k": int(k),
             "min_support": int(min_support),
-            "require_binding_evidence": bool(require_binding),
-            "require_expression": bool(require_expression),
+            "require_binding_evidence": False,
+            "require_expression": False,
             "pathway_mode": "auto",
         }
 
