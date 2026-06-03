@@ -722,12 +722,12 @@ with c1:
     )
 with c2:
     k = st.number_input(
-        "Number of results",
-        min_value=1,
+        "Candidate pool size (k)",
+        min_value=3,
         max_value=25,
-        value=5,
+        value=10,
         step=1,
-        help="miRAssist returns the top ranked candidates after evidence, context, and pathway filtering.",
+        help="k is the number of evidence cards passed to the synthesizer after backend filtering and scoring. The app prints the top 5 ranked results by default.",
     )
 with c3:
     min_support = st.number_input(

@@ -24,6 +24,8 @@ OPENAI_API_KEY=...
 MIRASSIST_PLANNER_MODEL=gpt-5.4-nano
 MIRASSIST_SYNTH_MODEL=gpt-5.4-mini
 MIRASSIST_SYNTH_MAX_TOKENS=2500
+MIRASSIST_DEFAULT_K=10
+MIRASSIST_DEFAULT_RESULT_COUNT=5
 JOBSTORE_BACKEND=postgres
 DATABASE_URL=...
 EVIDENCE_BACKEND=postgres
@@ -191,7 +193,11 @@ The backend auto-creates a `mirassist_jobs` table with:
 
 If `JOBSTORE_BACKEND=postgres` is set without `DATABASE_URL`, the app falls back to filesystem storage for development.
 
-By default, miRAssist returns the top 5 ranked candidates. Users can request more by changing the `Number of results` control or explicitly asking for a larger top-N in the prompt.
+By default, miRAssist uses `k=10` as the candidate pool passed to synthesis, then prints the top 5 ranked results from that pool.
+
+- `k` is the number of evidence cards/candidates returned to the synthesizer after backend filtering and scoring.
+- The final printed result count defaults to 5.
+- Users can increase the candidate pool with the `Candidate pool size (k)` control.
 
 ## Environment templates
 

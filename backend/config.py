@@ -189,7 +189,11 @@ def get_debug_ui() -> bool:
 
 
 def get_default_k() -> int:
-    return int(os.getenv("MIRASSIST_DEFAULT_K", "5"))
+    return int(os.getenv("MIRASSIST_DEFAULT_K", "10"))
+
+
+def get_default_result_count() -> int:
+    return int(os.getenv("MIRASSIST_DEFAULT_RESULT_COUNT", "5"))
 
 
 def get_vllm_http_url() -> str | None:
@@ -209,5 +213,6 @@ PLANNER_MODEL = get_planner_model()
 SYNTH_MODEL = get_synth_model()
 MAX_PROMPT_TOKENS = int(os.getenv("MIRASSIST_MAX_PROMPT_TOKENS", "6500"))
 DEFAULT_K = get_default_k()
+DEFAULT_RESULT_COUNT = get_default_result_count()
 DEFAULT_MIN_SUPPORT = int(os.getenv("MIRASSIST_DEFAULT_MIN_SUPPORT", "1"))
 EVIDENCE_PATH = resolve_evidence_path()

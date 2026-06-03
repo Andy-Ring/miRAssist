@@ -120,7 +120,7 @@ class FeaturePercentileTests(unittest.TestCase):
                 "mirna": "hsa-let-7a-2-3p",
                 "cancer": {"name": "breast cancer", "tcga": "BRCA"},
                 "novel": True,
-                "k": 2,
+                "k": 10,
                 "pathway_selection": {
                     "enabled": True,
                     "selected_pathways": [{"pathway_name": "apoptosis"}],
@@ -134,7 +134,8 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertIn("## Interpretation", bundle["system_prompt"])
         self.assertIn("## Results", bundle["system_prompt"])
         self.assertIn("## Final recommendation", bundle["system_prompt"])
-        self.assertIn("Requested ranked results: 2", bundle["user_prompt"])
+        self.assertIn("Requested ranked results: 5", bundle["user_prompt"])
+        self.assertIn("Available evidence cards: 2", bundle["user_prompt"])
         self.assertIn("Evidence support count", bundle["user_prompt"])
         self.assertIn("Evidence categories:", bundle["user_prompt"])
         self.assertIn("Key pieces of evidence", bundle["system_prompt"])

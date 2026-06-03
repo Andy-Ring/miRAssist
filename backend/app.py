@@ -39,7 +39,7 @@ LOGS_DIR = resolve_logs_dir()
 class QueryRequest(BaseModel):
     question: str
     novel: bool = True
-    k: int = 5
+    k: int = 10
     min_support: int = 1
     require_binding_evidence: bool = False
     require_expression: bool = False

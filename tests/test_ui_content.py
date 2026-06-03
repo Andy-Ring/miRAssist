@@ -26,7 +26,8 @@ class UIContentTests(unittest.TestCase):
         self.assertIn("What genes are regulated by hsa-miR-210-3p?", text)
         self.assertIn("strict pathway filtering", text)
         self.assertIn("Evidence support count", text)
-        self.assertIn("top 5 ranked candidates", text)
+        self.assertIn("prints the top 5 ranked results", text)
+        self.assertIn("k` is the number of evidence cards", text)
         self.assertIn("Novel mode", text)
 
     def test_about_evidence_section_lists_core_sources(self) -> None:

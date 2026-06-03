@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any, Dict
 
-from backend.config import get_default_k, get_planner_model, get_planner_temperature
+from backend.config import get_default_k, get_default_result_count, get_planner_model, get_planner_temperature
 
 
 PLANNER_SYSTEM_PROMPT = """You are miRAssist's planner.
@@ -49,6 +49,7 @@ REQUIRED SCHEMA (all keys must be present):
   },
   "novel": boolean,
   "k": number,
+  "result_count": number | null,
   "filters": {
     "min_support": number,
     "require_binding_evidence": boolean,
@@ -60,6 +61,8 @@ REQUIRED SCHEMA (all keys must be present):
 NOTES:
 - "mode" depends on whether the question centers on a miRNA or a gene.
 - "novel" should be true if the user asks for new, unvalidated, or exploratory targets.
+- "k" is the number of evidence cards/candidates passed forward to synthesis after backend retrieval and scoring.
+- "result_count" is the number of final ranked results to print. If the user does not explicitly ask for a top-N, leave this null and the app will default to 5 printed results.
 - "phenotype_keywords" should capture things like proliferation, apoptosis, EMT, invasion, etc.
 - "phenotype_context" should only reflect the user's stated or strongly implied biological context.
 - "pathway_selection_request.enabled" should be true if phenotype or pathway context is implied.
@@ -182,6 +185,7 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
 
     qs.setdefault("novel", False)
     qs.setdefault("k", get_default_k())
+    qs.setdefault("result_count", None)
 
     # Filters
     qs.setdefault("filters", {})
@@ -197,6 +201,12 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
         qs["k"] = int(qs["k"])
     except Exception:
         qs["k"] = get_default_k()
+
+    try:
+        if qs["result_count"] is not None:
+            qs["result_count"] = int(qs["result_count"])
+    except Exception:
+        qs["result_count"] = get_default_result_count()
 
     try:
         qs["filters"]["min_support"] = int(qs["filters"]["min_support"])

@@ -35,12 +35,13 @@ How cancer context works:
 - If included, a cancer-type specific anticorrelation feature will be added to the query.
 
 How to interpret results:
+- `k` is the number of evidence cards/candidates passed to the synthesizer after backend filtering and scoring.
+- By default, miRAssist prints the top 5 ranked results from that candidate pool.
 - Evidence support count = number of distinct evidence categories, not number of raw features.
 - Evidence support count measures breadth, not strength.
 - Percentiles show whether a feature is unusually high across the database.
 - miRTarBase is curated prior evidence.
 - Overall priority considers both evidence breadth and evidence strength.
-- By default, miRAssist returns the top 5 ranked candidates unless you request more.
 
 Novel mode:
 - Novel mode excludes known miRTarBase functional interactions from the ranked list.

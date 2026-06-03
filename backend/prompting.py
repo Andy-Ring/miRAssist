@@ -8,6 +8,8 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
+from backend.config import get_default_result_count
+
 
 SYSTEM_PROMPT = """You are miRAssist, a scientific assistant that helps prioritize miRNA-mRNA interactions for experimental follow-up.
 
@@ -285,7 +287,9 @@ def build_prompt_bundle(
     if needs_clarification is None:
         needs_clarification = qs.get("needs_clarification") or []
     pathway_selection = qs.get("pathway_selection") or {}
-    requested_results = qs.get("k") or (len(df) if df is not None else len(cards or []))
+    requested_results = qs.get("result_count")
+    if requested_results in (None, "", 0):
+        requested_results = get_default_result_count()
 
     if cards is None:
         if df is None:
