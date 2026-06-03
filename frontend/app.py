@@ -106,7 +106,7 @@ st.markdown(
 
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.7.1"
+APP_VERSION = "0.7.2"
 APP_AUTHOR = "Andy Ring"
 
 
@@ -565,7 +565,7 @@ def run_direct_mode(submit_payload: dict) -> None:
             novel=submit_payload["novel"],
             require_binding_evidence=submit_payload["require_binding_evidence"],
             require_expression=submit_payload["require_expression"],
-            pathway_mode=submit_payload["pathway_mode"],
+            pathway_mode="auto",
         )
 
     final_result = read_job(query_id)
@@ -712,6 +712,9 @@ st.markdown("### Override options (optional)")
 st.caption(
     "miRAssist will infer settings from your question. These controls override defaults without needing to specify in the question."
 )
+st.caption(
+    "Pathway and phenotype terms in your question are used as strict filters against the pathway database."
+)
 
 c1, c2, c3 = st.columns(3)
 with c1:
@@ -742,7 +745,7 @@ with c3:
         help="Minimum number of supporting evidence channels required to keep a pair.",
     )
 
-c4, c5, c6 = st.columns(3)
+c4, c5 = st.columns(2)
 with c4:
     require_binding = st.checkbox(
         "Require binding evidence (override)",
@@ -754,17 +757,6 @@ with c5:
         "Require expression evidence (override)",
         value=False,
         help="If enabled, require miRNA and gene expression evidence where available.",
-    )
-with c6:
-    pathway_mode = st.selectbox(
-        "Pathway mode (override)",
-        options=["auto", "boost", "filter"],
-        index=0,
-        help=(
-            "auto: use planner defaults\n"
-            "boost: prefer genes with pathway hits\n"
-            "filter: only return genes with pathway hits"
-        ),
     )
 
 run_disabled = not question.strip() or (APP_MODE == "api" and not st.session_state.get("api_url"))
@@ -782,7 +774,7 @@ if run:
             "min_support": int(min_support),
             "require_binding_evidence": bool(require_binding),
             "require_expression": bool(require_expression),
-            "pathway_mode": str(pathway_mode),
+            "pathway_mode": "auto",
         }
 
         if APP_MODE == "direct":
@@ -865,11 +857,47 @@ if result:
                 st.markdown("#### Full result JSON")
                 st.json(result)
 
+        with st.expander("Pathway selection", expanded=False):
+            pathway_selection = result.get("pathway_selection") or queryspec.get("pathway_selection") or {}
+            if pathway_selection.get("enabled"):
+                st.json(
+                    {
+                        "enabled": pathway_selection.get("enabled"),
+                        "mode": pathway_selection.get("mode"),
+                        "phenotype": pathway_selection.get("phenotype"),
+                        "direction": pathway_selection.get("direction"),
+                        "query_terms": pathway_selection.get("query_terms"),
+                        "selected_pathways": pathway_selection.get("selected_pathways"),
+                        "n_selected_pathways": pathway_selection.get("n_selected_pathways"),
+                        "n_selected_genes": pathway_selection.get("n_selected_genes"),
+                        "warnings": pathway_selection.get("warnings"),
+                    }
+                )
+            else:
+                st.info("No pathway filtering applied.")
+
         with st.expander("Evidence shortlist (optional)", expanded=False):
             shortlist = result.get("shortlist", [])
             if isinstance(shortlist, list) and len(shortlist) > 0:
                 df = pd.DataFrame(shortlist)
                 st.dataframe(df, use_container_width=True)
+            else:
+                st.info("Shortlist is empty.")
+
+        with st.expander("Feature percentile annotations", expanded=False):
+            shortlist = result.get("shortlist", [])
+            if isinstance(shortlist, list) and len(shortlist) > 0:
+                df = pd.DataFrame(shortlist)
+                feature_cols = [
+                    col
+                    for col in df.columns
+                    if str(col).endswith("_percentile") or str(col).endswith("_label")
+                ]
+                if feature_cols:
+                    identity_cols = [col for col in ["mirna_name", "gene_symbol"] if col in df.columns]
+                    st.dataframe(df[identity_cols + feature_cols], use_container_width=True)
+                else:
+                    st.info("No feature percentile annotations were present in the shortlist.")
             else:
                 st.info("Shortlist is empty.")
 

@@ -122,7 +122,10 @@ class RetrievalConfig:
     # Phenotype/pathway conditioning
     phenotype_keywords: Optional[List[str]] = None
     pathway_keywords: Optional[List[str]] = None
-    pathway_filter: Optional[Dict[str, Any]] = None  # {"enabled":bool,"mode":"boost|filter","min_gene_sets":int}
+    pathway_filter: Optional[Dict[str, Any]] = None
+    pathway_selection: Optional[Dict[str, Any]] = None
+    pathway_gene_set: Optional[set[str]] = None
+    pathway_gene_map: Optional[Dict[str, List[str]]] = None
 
     # Optional soft gates (off by default)
     require_binding_evidence: bool = False
@@ -564,62 +567,56 @@ def retrieve_candidates(
         + (0.3 * tcga_repression_flag.astype(float))
     )
 
-    # --- Pathway bonus (optional) ---
+    # --- Pathway filtering (strict, filter-only) ---
     pathway_bonus = pd.Series(np.zeros(len(df), dtype=float), index=df.index)
-    pf = cfg.pathway_filter or {}
-    enabled = bool(pf.get("enabled", False))
-    mode = str(pf.get("mode", "boost")).lower()
-    min_gene_sets = int(pf.get("min_gene_sets", 1))
+    pathway_selection = cfg.pathway_selection or {}
+    pathway_enabled = bool(pathway_selection.get("enabled"))
+    pathway_gene_map = cfg.pathway_gene_map or {}
+    pathway_gene_set = {str(gene).upper() for gene in (cfg.pathway_gene_set or set())}
 
-    if enabled and (cfg.pathway_keywords or cfg.phenotype_keywords):
-        if "gene_pathway_hits" in df.columns:
-            hits_i = _safe_int_col(df, "gene_pathway_hits", default=0)
+    if pathway_enabled:
+        if not pathway_gene_set:
+            return df.head(0), direction
 
-            if mode == "filter":
-                df = df.loc[hits_i >= min_gene_sets].copy()
-                if df.empty:
-                    return df.head(0), direction
+        df = df[df["gene_symbol"].astype(str).str.upper().isin(pathway_gene_set)].copy()
+        if df.empty:
+            return df.head(0), direction
 
-                # recompute aligned series after filter
-                support = _safe_float_col(df, "support_count", default=0.0)
-                ts_ctx = _safe_float_col(df, "ts_best_contextpp", default=0.0)
-                ts_contrib = np.clip(-ts_ctx, 0, 2.0)
-                clip_sum = _safe_float_col(df, "clip_exp_sum", default=0.0)
-                clip_contrib = np.log1p(clip_sum) / 5.0
-                mirdb_best = _safe_float_col(df, "mirdb_best_score", default=0.0)
-                mirdb_contrib = (mirdb_best / 100.0)
+        support = _safe_float_col(df, "support_count", default=0.0)
+        ts_ctx = _safe_float_col(df, "ts_best_contextpp", default=0.0)
+        ts_contrib = np.clip(-ts_ctx, 0, 2.0)
+        clip_sum = _safe_float_col(df, "clip_exp_sum", default=0.0)
+        clip_contrib = np.log1p(clip_sum) / 5.0
+        mirdb_best = _safe_float_col(df, "mirdb_best_score", default=0.0)
+        mirdb_contrib = (mirdb_best / 100.0)
 
-                tcga_rho_strength = pd.Series(np.zeros(len(df), dtype=float), index=df.index)
-                tcga_support_flag = pd.Series(np.zeros(len(df), dtype=int), index=df.index)
-                tcga_repression_flag = pd.Series(np.zeros(len(df), dtype=int), index=df.index)
-                tcga_p = pd.Series(np.full(len(df), np.nan, dtype=float), index=df.index)
+        tcga_rho_strength = pd.Series(np.zeros(len(df), dtype=float), index=df.index)
+        tcga_support_flag = pd.Series(np.zeros(len(df), dtype=int), index=df.index)
+        tcga_repression_flag = pd.Series(np.zeros(len(df), dtype=int), index=df.index)
+        tcga_p = pd.Series(np.full(len(df), np.nan, dtype=float), index=df.index)
 
-                if cfg.tcga:
-                    tcga = str(cfg.tcga).upper()
-                    rho_col = f"{tcga}_spearman_rho"
-                    p_col = f"{tcga}_spearman_p"
-                    rep_col = f"{tcga}_repression_evidence"
+        if cfg.tcga:
+            tcga = str(cfg.tcga).upper()
+            rho_col = f"{tcga}_spearman_rho"
+            p_col = f"{tcga}_spearman_p"
+            rep_col = f"{tcga}_repression_evidence"
 
-                    if rho_col in df.columns:
-                        rho = _safe_float_col(df, rho_col, default=0.0)
-                        tcga_rho_strength = np.clip(-rho, 0, 1.0)
-                    if p_col in df.columns:
-                        tcga_p = _safe_float_col(df, p_col, default=np.nan)
+            if rho_col in df.columns:
+                rho = _safe_float_col(df, rho_col, default=0.0)
+                tcga_rho_strength = np.clip(-rho, 0, 1.0)
+            if p_col in df.columns:
+                tcga_p = _safe_float_col(df, p_col, default=np.nan)
 
-                    tcga_support_flag = _derive_tcga_support_flag(df, tcga)
+            tcga_support_flag = _derive_tcga_support_flag(df, tcga)
 
-                    if rep_col in df.columns:
-                        tcga_repression_flag = _bool_col(df, rep_col)
+            if rep_col in df.columns:
+                tcga_repression_flag = _bool_col(df, rep_col)
 
-                tcga_contrib = (
-                    (1.0 * tcga_rho_strength)
-                    + (0.8 * tcga_support_flag.astype(float))
-                    + (0.3 * tcga_repression_flag.astype(float))
-                )
-
-                hits_i = _safe_int_col(df, "gene_pathway_hits", default=0)
-
-            pathway_bonus = np.clip(hits_i.astype(float) / 5.0, 0, 1.0)
+        tcga_contrib = (
+            (1.0 * tcga_rho_strength)
+            + (0.8 * tcga_support_flag.astype(float))
+            + (0.3 * tcga_repression_flag.astype(float))
+        )
 
     # --- Final score ---
     score = (
@@ -644,6 +641,13 @@ def retrieve_candidates(
         retrieval_tcga_p=tcga_p,
         retrieval_pathway_bonus=pathway_bonus,
         matched_query_tokens=";".join(matched_tokens),
+        pathway_selected_gene=df["gene_symbol"].astype(str).str.upper().isin(pathway_gene_set).astype(int),
+        pathway_match_count=df["gene_symbol"].astype(str).str.upper().map(
+            lambda gene: len(pathway_gene_map.get(gene, []))
+        ),
+        pathway_selected_names=df["gene_symbol"].astype(str).str.upper().map(
+            lambda gene: pathway_gene_map.get(gene, [])
+        ),
     )
 
     df = df.sort_values("retrieval_score", ascending=False)
@@ -652,7 +656,11 @@ def retrieve_candidates(
     return df, direction
 
 
-def retrieve_from_queryspec(ev: pd.DataFrame, queryspec: Dict[str, Any]) -> Tuple[pd.DataFrame, str]:
+def retrieve_from_queryspec(
+    ev: pd.DataFrame,
+    queryspec: Dict[str, Any],
+    pathway_selection: Optional[Dict[str, Any]] = None,
+) -> Tuple[pd.DataFrame, str]:
     """
     Wrapper expected by backend/app.py:
       queryspec -> RetrievalConfig -> retrieve_candidates
@@ -669,6 +677,9 @@ def retrieve_from_queryspec(ev: pd.DataFrame, queryspec: Dict[str, Any]) -> Tupl
         tcga = queryspec.get("tcga")
 
     filters = queryspec.get("filters") or {}
+    pathway_selection = pathway_selection or queryspec.get("pathway_selection") or {}
+    pathway_gene_map = pathway_selection.get("selected_gene_pathways") or {}
+    pathway_gene_set = set(pathway_selection.get("selected_genes") or [])
 
     cfg = RetrievalConfig(
         k_shortlist=int(queryspec.get("k", 200)),
@@ -678,6 +689,12 @@ def retrieve_from_queryspec(ev: pd.DataFrame, queryspec: Dict[str, Any]) -> Tupl
         phenotype_keywords=queryspec.get("phenotype_keywords") or [],
         pathway_keywords=queryspec.get("pathway_keywords") or [],
         pathway_filter=queryspec.get("pathway_filter") or None,
+        pathway_selection=pathway_selection,
+        pathway_gene_set={str(gene).upper() for gene in pathway_gene_set},
+        pathway_gene_map={
+            str(gene).upper(): list(names or [])
+            for gene, names in pathway_gene_map.items()
+        },
         require_binding_evidence=bool(filters.get("require_binding_evidence", False)),
         require_expression=bool(filters.get("require_expression", False)),
         collapse_duplicates=True,

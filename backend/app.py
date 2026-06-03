@@ -45,7 +45,7 @@ class QueryRequest(BaseModel):
     require_expression: bool = False
     pathway_mode: str = Field(
         default="auto",
-        description="Override pathway integration mode: auto|boost|filter",
+        description="Legacy pathway override: auto|filter; boost is accepted for backward compatibility and treated as filter",
     )
 
 

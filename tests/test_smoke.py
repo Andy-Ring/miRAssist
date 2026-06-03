@@ -111,7 +111,7 @@ class ApiSmokeTests(unittest.TestCase):
                             "pathway_keywords": [],
                             "pathway_filter": {
                                 "enabled": False,
-                                "mode": "boost",
+                                "mode": "filter",
                                 "min_gene_sets": 1,
                             },
                             "novel": False,

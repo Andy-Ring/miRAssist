@@ -1,79 +1,71 @@
 """
 Prompt templates + bundle builder for miRAssist.
-
-Your backend imports:
-    from backend.prompting import build_prompt_bundle
-
-So this file MUST provide:
-- SYSTEM_PROMPT
-- build_user_prompt(...)
-- build_prompt_bundle(...)
-
-Design goals:
-- Clean, uniform output
-- No duplicate candidates
-- Accurate method referencing
-- Less skeptical tone (still evidence-grounded)
 """
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Callable
+from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
-import json
 
-# ----------------------------
-# System prompt (synthesizer)
-# ----------------------------
-SYSTEM_PROMPT = """You are miRAssist, a scientific assistant that helps prioritize miRNA–mRNA interactions for experimental follow-up.
+SYSTEM_PROMPT = """You are miRAssist, a scientific assistant that helps prioritize miRNA-mRNA interactions for experimental follow-up.
 
 Your primary goal is to present results clearly, consistently, and accurately, using only the provided evidence.
 
-Hard rules (must follow):
-- Use ONLY the provided evidence cards and the user’s question/context. Do not invent evidence.
-- If the user asks for "top N", output EXACTLY N UNIQUE ranked items.
-- Never list the same gene or miRNA more than once, even if multiple cards reference it.
-- Do not repeat the same candidate under different wording.
-- Do not speculate beyond what is supported by the evidence cards.
+Hard rules:
+- Use ONLY the provided evidence cards and the user's question/context. Do not invent evidence.
+- The backend has already ranked the candidates. Use the provided ranking order and do not rerank based on unsupported intuition.
+- Output EXACTLY the requested number of ranked items when enough candidates are available.
+- Never list the same gene or miRNA more than once.
+- Do not invent gene-to-phenotype links.
+- Do not invent pathway membership.
+- Do not infer pathway directionality unless the pathway name explicitly supports it.
+- Do not calculate percentiles yourself; use the backend-provided labels and values.
+- Do not invent feature strengths; use only the backend-provided raw values and labels.
+- Do not describe computational predictions as experimental validation.
 
 Evidence interpretation rules:
-- miRTarBase (functional=1): curated experimental validation (strongest support).
-- ENCORI CLIP: physical binding evidence (AGO/RBP-supported), not necessarily repression.
-- TargetScan context++: Sequence complementarity-based prediction (more negative = stronger).
-- miRDB score: expression-based prediction (higher = stronger). A score over 60 is considered evidence for coregulation and over 80 is strong evidence.
-- TCGA correlation, an anticorrelation is evidence of functional repression in a specific cancer type but lack of anticorrelation is not necessarily evidence of no interaction.
+- miRTarBase functional support is curated prior evidence, not automatic proof of the exact user context.
+- miRDB, TargetScan, seed features, RNAhybrid, and local AU are computational or structural support, not experimental validation.
+- ENCORI/CLIP supports binding evidence, not necessarily repression.
+- TCGA context evidence is context-specific repression support, not direct binding evidence.
+- Pathway evidence only means the candidate passed the deterministic pathway filter or has explicit pathway names in the card.
 
 Novel mode rules:
 - In novel mode, miRTarBase functional pairs must NOT appear in the ranked list.
 - Known interactions may be mentioned only as background context, not as novel candidates.
 
-Required output structure (always follow this format):
+Required output format:
 
-1) Interpretation
-   - 1–2 sentences restating the miRNA/gene, cancer context, and phenotype/pathway (if provided).
+## Interpretation
+- A short paragraph or 2-4 bullets stating:
+  - what miRNA/gene is being queried
+  - whether the task is miRNA->targets or gene->miRNAs
+  - whether novel mode is on/off
+  - whether a cancer context was used
+  - whether a pathway/phenotype filter was applied
+  - if pathway filtering was applied, that results are restricted to genes in selected pathways
 
-2) Ranked Results
-   - EXACTLY N items.
-   - Use Markdown to create clean, easily readable bullet points.
-   - Each item must be UNIQUE.
-   - For each item include:
-     • Name (gene symbol or miRNA)
-     • Evidence summary (one compact line; only sources present in cards)
-     • Context relevance (one short sentence, grounded in evidence)
+## Results
+- Return candidates in the provided ranking order.
+- If fewer than the requested number of candidates were provided, say that fewer candidates passed the filters.
+- For each result use this format:
 
-3) Final Recommendation
-   - 3-5 sentance summary of your final recommendation that answers the question: Which candidate would you test and why, using the evidence you just found?
+### 1. GENE_OR_MIRNA
+- **Number of features supporting interaction:** X
+- **Pathways:** pathway names if pathway filtering was applied, otherwise "Not pathway-filtered"
+- **Key pieces of evidence:**
+  - compact list of the strongest raw values and backend-provided labels
+- **Explanation:** 2-4 sentences grounded only in the evidence card
 
-Keep language professional, direct, and non-redundant.
-Avoid excessive caveats or hedging.
+## Final recommendation
+- A short paragraph saying which 1-3 candidates are best for follow-up and why.
+
+Keep language professional, direct, and readable.
 """
 
 
-# ----------------------------
-# User prompt builder
-# ----------------------------
 def build_user_prompt(
     *,
     user_question: str,
@@ -83,11 +75,14 @@ def build_user_prompt(
     novel: bool = False,
     phenotype_keywords: Optional[List[str]] = None,
     pathway_keywords: Optional[List[str]] = None,
+    pathway_selection: Optional[Dict[str, Any]] = None,
     cards: List[Dict[str, Any]],
     needs_clarification: Optional[List[str]] = None,
+    requested_results: Optional[int] = None,
 ) -> str:
     phenotype_keywords = phenotype_keywords or []
     pathway_keywords = pathway_keywords or []
+    pathway_selection = pathway_selection or {}
     needs_clarification = needs_clarification or []
 
     if direction == "mirna_to_targets":
@@ -101,33 +96,43 @@ def build_user_prompt(
         output_item = "candidates"
 
     ctx_lines: List[str] = []
-
     if cancer_name or cancer:
-        c = cancer_name if cancer_name else cancer
-        ctx_lines.append(f"- Cancer context: {c}")
-
+        ctx_lines.append(f"- Cancer context: {cancer_name if cancer_name else cancer}")
     if phenotype_keywords:
         ctx_lines.append(f"- Phenotype keywords: {', '.join(phenotype_keywords)}")
-
     if pathway_keywords:
         ctx_lines.append(f"- Pathway keywords: {', '.join(pathway_keywords)}")
-
+    if pathway_selection.get("enabled"):
+        selected_names = [
+            item.get("pathway_name", "")
+            for item in (pathway_selection.get("selected_pathways") or [])
+            if item.get("pathway_name")
+        ]
+        if selected_names:
+            ctx_lines.append(f"- Selected pathways: {', '.join(selected_names[:8])}")
+        if pathway_selection.get("warnings"):
+            ctx_lines.append(f"- Pathway warnings: {'; '.join(pathway_selection.get('warnings') or [])}")
     if novel:
         ctx_lines.append("- Mode: NOVEL (exclude miRTarBase functional interactions from ranked list)")
-
     if needs_clarification:
         ctx_lines.append(f"- Ambiguities noted by planner: {', '.join(needs_clarification)}")
 
+    available_n = len(cards)
+    top_n = int(requested_results or available_n)
+    if top_n <= 0:
+        top_n = available_n
     instr = f"""Task:
 {task}
 
 Requirements:
-- If the user asks for "top N", provide EXACTLY N UNIQUE ranked {output_item}. Do not repeat any item.
+- Requested ranked results: {top_n}
+- Available evidence cards: {available_n}
+- Return EXACTLY {top_n} UNIQUE ranked {output_item} in the provided order unless fewer than {top_n} candidates passed the filters.
 - Use only the evidence cards below; do not invent extra support.
-- Rank using strength + consistency of evidence across sources.
-- For each ranked item, give a summary of the evidence for and against an interaction.
-- Do not treat computational predictions as experimental proof.
-- Keep phenotype/pathway discussion brief; use it mainly as a tie-breaker if evidence supports it.
+- Do not rerank candidates based on unsupported intuition.
+- Use the backend-provided number of features, evidence categories, raw values, percentile labels, and caveats.
+- Do not invent percentiles, feature strength labels, pathway membership, or gene-phenotype links.
+- Do not claim a candidate belongs to a pathway unless the card explicitly says it passed the pathway filter or names the pathways.
 - Use the required output structure from the system prompt.
 
 User question:
@@ -140,30 +145,42 @@ Evidence cards:
 """
 
     card_blocks: List[str] = []
-    for c in cards:
-        name = c.get("name", "UNKNOWN")
-        evidence = c.get("evidence", "")
-        notes = c.get("notes", None)
-
-        block = [f"Candidate: {name}", f"Evidence: {evidence}"]
-        if notes:
-            block.append(f"Notes: {notes}")
+    for index, card in enumerate(cards, start=1):
+        raw_key_values = card.get("raw_key_values") or {}
+        raw_value_line = "None"
+        if raw_key_values:
+            raw_value_line = "; ".join(f"{key}={value}" for key, value in raw_key_values.items())
+        pathway_names = card.get("pathway_names") or []
+        block = [
+            f"Candidate {index}: {card.get('name', 'UNKNOWN')}",
+            f"miRNA: {card.get('mirna_name', '')}",
+            f"Gene: {card.get('gene_symbol', '')}",
+            f"Support count: {card.get('support_count', 0)}",
+            f"Number of features supporting interaction: {card.get('number_of_features_supporting_interaction', 0)}",
+            "Pathways: " + ("; ".join(pathway_names) if pathway_names else "Not pathway-filtered"),
+            "Target evidence: " + ("; ".join(card.get("target_evidence") or []) or "None"),
+            "Published model evidence: " + ("; ".join(card.get("published_model_evidence") or []) or "None"),
+            "CLIP/binding evidence: " + ("; ".join(card.get("clip_binding_evidence") or []) or "None"),
+            "Seed/site evidence: " + ("; ".join(card.get("seed_site_evidence") or []) or "None"),
+            "Structure evidence: " + ("; ".join(card.get("structure_evidence") or []) or "None"),
+            "TCGA/context evidence: " + ("; ".join(card.get("tcga_context_evidence") or []) or "None"),
+            "Pathway evidence: " + ("; ".join(card.get("pathway_evidence") or []) or "Not pathway-filtered"),
+            "Strongest features: " + ("; ".join(card.get("strongest_features") or []) or "None"),
+            "Raw key values: " + raw_value_line,
+            "Caveats: " + ("; ".join(card.get("caveats") or []) or "None"),
+        ]
+        if card.get("notes"):
+            block.append(f"Notes: {card.get('notes')}")
         card_blocks.append("\n".join(block))
 
     return instr + "\n\n" + "\n\n".join(card_blocks)
 
 
-# ----------------------------
-# Bundle builder (what app.py imports)
-# ----------------------------
 def build_prompt_bundle(
     *,
-    # ✅ what your backend/app.py passes:
     queryspec: Optional[Dict[str, Any]] = None,
-    shortlist: Optional[pd.DataFrame] = None,  # alias for df
+    shortlist: Optional[pd.DataFrame] = None,
     direction: Optional[str] = None,
-
-    # Backward-compatible:
     user_question: Optional[str] = None,
     cancer: Optional[str] = None,
     cancer_name: Optional[str] = None,
@@ -171,38 +188,20 @@ def build_prompt_bundle(
     phenotype_keywords: Optional[List[str]] = None,
     pathway_keywords: Optional[List[str]] = None,
     needs_clarification: Optional[List[str]] = None,
-
-    # Cards path:
     cards: Optional[List[Dict[str, Any]]] = None,
-
-    # If someone calls with df instead of shortlist:
     df: Optional[pd.DataFrame] = None,
-
-    # Optional override for card builder:
     cards_from_dataframe: Optional[Callable[..., List[Dict[str, Any]]]] = None,
-
-    # Optional:
     tcga: Optional[str] = None,
     meta: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """
-    Create a prompt bundle consumed by your synthesizer.
-
-    - Supports your backend call: build_prompt_bundle(queryspec=..., shortlist=..., direction=...)
-    - Also supports older patterns: df=..., cards=..., etc.
-    """
-
     qs = queryspec or {}
 
-    # Resolve DF input
     if shortlist is not None and df is None:
         df = shortlist
 
-    # Question
     if user_question is None:
         user_question = qs.get("original_question") or qs.get("question") or ""
 
-    # Direction
     if direction is None:
         mode = qs.get("mode")
         if mode == "mirna_to_targets":
@@ -212,7 +211,6 @@ def build_prompt_bundle(
         else:
             direction = qs.get("direction") or "unknown"
 
-    # Cancer context (QuerySpec uses nested cancer struct)
     qs_cancer = qs.get("cancer") or {}
     if tcga is None:
         tcga = qs_cancer.get("tcga") or qs.get("tcga")
@@ -221,28 +219,25 @@ def build_prompt_bundle(
     if cancer is None:
         cancer = cancer_name or tcga
 
-    # Novel
     if qs.get("novel") is True:
         novel = True
 
-    # Keywords / clarifications
     if phenotype_keywords is None:
         phenotype_keywords = qs.get("phenotype_keywords") or []
     if pathway_keywords is None:
         pathway_keywords = qs.get("pathway_keywords") or []
     if needs_clarification is None:
         needs_clarification = qs.get("needs_clarification") or []
+    pathway_selection = qs.get("pathway_selection") or {}
+    requested_results = qs.get("k") or (len(df) if df is not None else len(cards or []))
 
-    # Build cards
     if cards is None:
         if df is None:
             raise ValueError("build_prompt_bundle requires `shortlist` (or `df`) unless `cards` are provided.")
-
         if cards_from_dataframe is None:
-            # Default import to match your project layout
             from backend.cards import cards_from_dataframe as _cards_from_dataframe
-            cards_from_dataframe = _cards_from_dataframe
 
+            cards_from_dataframe = _cards_from_dataframe
         cards = cards_from_dataframe(df, tcga=tcga)
 
     user_prompt = build_user_prompt(
@@ -253,8 +248,10 @@ def build_prompt_bundle(
         novel=bool(novel),
         phenotype_keywords=phenotype_keywords or [],
         pathway_keywords=pathway_keywords or [],
+        pathway_selection=pathway_selection,
         cards=cards,
         needs_clarification=needs_clarification or [],
+        requested_results=int(requested_results) if requested_results is not None else None,
     )
 
     bundle: Dict[str, Any] = {

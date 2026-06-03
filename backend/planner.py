@@ -29,11 +29,22 @@ REQUIRED SCHEMA (all keys must be present):
     "name": string | null,
     "tcga": string | null
   },
+  "phenotype_context": {
+    "phenotype": string | null,
+    "direction": "promotes" | "suppresses" | "increases" | "decreases" | "associated" | null,
+    "raw_phrase": string | null
+  },
+  "pathway_selection_request": {
+    "enabled": boolean,
+    "query_terms": [string],
+    "directional_query_terms": [string],
+    "strict": boolean
+  },
   "phenotype_keywords": [string],
   "pathway_keywords": [string],
   "pathway_filter": {
     "enabled": boolean,
-    "mode": "boost" | "filter",
+    "mode": "filter",
     "min_gene_sets": number
   },
   "novel": boolean,
@@ -50,7 +61,11 @@ NOTES:
 - "mode" depends on whether the question centers on a miRNA or a gene.
 - "novel" should be true if the user asks for new, unvalidated, or exploratory targets.
 - "phenotype_keywords" should capture things like proliferation, apoptosis, EMT, invasion, etc.
-- "pathway_filter.enabled" should be true if phenotype or pathway context is implied.
+- "phenotype_context" should only reflect the user's stated or strongly implied biological context.
+- "pathway_selection_request.enabled" should be true if phenotype or pathway context is implied.
+- "pathway_selection_request.directional_query_terms" should include exact phrases like "positive regulation of apoptosis" or "negative regulation of apoptosis" when relevant.
+- "pathway_filter.enabled" should be true if phenotype or pathway context is implied, and if enabled its mode must always be "filter".
+- Do not invent genes or gene-pathway memberships.
 """
 
 
@@ -96,14 +111,29 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
 
     qs.setdefault("phenotype_keywords", [])
     qs.setdefault("pathway_keywords", [])
+    qs.setdefault(
+        "phenotype_context",
+        {"phenotype": None, "direction": None, "raw_phrase": None},
+    )
+    qs["phenotype_context"].setdefault("phenotype", None)
+    qs["phenotype_context"].setdefault("direction", None)
+    qs["phenotype_context"].setdefault("raw_phrase", None)
+    qs.setdefault(
+        "pathway_selection_request",
+        {"enabled": False, "query_terms": [], "directional_query_terms": [], "strict": False},
+    )
+    qs["pathway_selection_request"].setdefault("enabled", False)
+    qs["pathway_selection_request"].setdefault("query_terms", [])
+    qs["pathway_selection_request"].setdefault("directional_query_terms", [])
+    qs["pathway_selection_request"].setdefault("strict", False)
 
     # Pathway filter
     qs.setdefault(
         "pathway_filter",
-        {"enabled": False, "mode": "boost", "min_gene_sets": 1},
+        {"enabled": False, "mode": "filter", "min_gene_sets": 1},
     )
     qs["pathway_filter"].setdefault("enabled", False)
-    qs["pathway_filter"].setdefault("mode", "boost")
+    qs["pathway_filter"].setdefault("mode", "filter")
     qs["pathway_filter"].setdefault("min_gene_sets", 1)
 
     qs.setdefault("novel", False)
@@ -130,6 +160,22 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
 
     if qs["mode"] not in ("mirna_to_targets", "gene_to_mirnas"):
         qs["mode"] = "mirna_to_targets"
+
+    direction = qs["phenotype_context"].get("direction")
+    if direction not in {"promotes", "suppresses", "increases", "decreases", "associated", None}:
+        qs["phenotype_context"]["direction"] = None
+
+    pathway_enabled = bool(
+        qs["pathway_selection_request"].get("enabled")
+        or qs["pathway_filter"].get("enabled")
+        or qs.get("phenotype_keywords")
+        or qs.get("pathway_keywords")
+        or qs["phenotype_context"].get("phenotype")
+    )
+    qs["pathway_selection_request"]["enabled"] = pathway_enabled
+    qs["pathway_selection_request"]["strict"] = pathway_enabled
+    qs["pathway_filter"]["enabled"] = pathway_enabled
+    qs["pathway_filter"]["mode"] = "filter"
 
     return qs
 

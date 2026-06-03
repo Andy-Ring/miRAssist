@@ -114,6 +114,45 @@ DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME
 
 The Postgres evidence path is implemented as a direct table read, but the table still needs to contain the columns expected by the current retrieval logic. If the table is missing or unreadable, miRAssist now fails with a clear error mentioning `EVIDENCE_TABLE` and `DATABASE_URL`.
 
+## Evidence interpretation and feature percentiles
+
+miRAssist now computes evidence feature percentiles across the full evidence table before synthesis. These annotations are added to the retrieved shortlist and stored in the job payload, so the LLM receives backend-computed evidence labels instead of inventing them.
+
+- Percentiles are computed against the full evidence database, not just the current shortlist.
+- Higher-is-better transformed features are used where possible, such as `ts_context_strength` instead of raw `ts_best_contextpp`, and `mfe_strength` instead of raw `best_mfe`.
+- Percentile labels are deterministic:
+  - `>= 95`: `exceptional`
+  - `>= 90`: `very high`
+  - `>= 75`: `high`
+  - `>= 50`: `above average`
+  - `>= 25`: `typical`
+  - `< 25`: `low`
+- Missing values remain `not available`.
+
+The evidence cards now distinguish different evidence types:
+
+- miRTarBase: curated prior functional support
+- miRDB and TargetScan: computational prediction support
+- CLIP / ENCORI: binding-associated support
+- seed/site architecture: canonical site support
+- RNAhybrid and MFE-derived features: structure-compatible support
+- TCGA anticorrelation: context-specific repression support
+- pathway filtering: deterministic membership in selected pathways only
+
+The LLM is instructed to use these backend-provided values and labels exactly as given. It must not calculate percentiles, invent pathway membership, or add unsupported gene-phenotype claims.
+
+## Grounded pathway filtering
+
+miRAssist now treats pathway and phenotype context as grounded database filters rather than LLM-generated gene annotations.
+
+- The planner extracts phenotype and pathway intent only.
+- A deterministic pathway resolver matches those terms against `data/processed/pathways/pathways.parquet`.
+- Gene restriction is then applied using `data/processed/pathways/gene_to_pathways.parquet`.
+- The LLM is not allowed to invent gene-to-phenotype or gene-to-pathway connections.
+- Pathway behavior is filter-only.
+
+If a user mentions apoptosis, proliferation, EMT, invasion, or another pathway or phenotype, miRAssist restricts candidates to genes in matching pathways before scoring.
+
 ## Supabase / Postgres job storage
 
 Use Postgres-backed jobs with:
@@ -200,6 +239,12 @@ Existing backend/API smoke coverage is still available in:
 
 ```bash
 python -m unittest tests.test_smoke
+```
+
+Focused evidence interpretation smoke coverage is available in:
+
+```bash
+python -m unittest tests.test_evidence_features
 ```
 
 ## Remaining TODO

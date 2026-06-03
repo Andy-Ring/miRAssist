@@ -4,7 +4,9 @@ import argparse
 import traceback
 from typing import Any, Dict
 
+from backend.feature_stats import annotate_feature_percentiles
 from backend.jobstore import write_job
+from backend.pathways import resolve_pathway_selection
 from backend.planner import run_planner
 from backend.prompting import build_prompt_bundle
 from backend.retrieval import load_evidence, retrieve_from_queryspec
@@ -22,6 +24,7 @@ def _apply_query_overrides(
     pathway_mode: str,
 ) -> Dict[str, Any]:
     qs = dict(queryspec)
+    debug_warnings = list(qs.get("debug_warnings") or [])
     qs["k"] = int(k)
     qs.setdefault("filters", {})
     qs["filters"]["min_support"] = int(min_support)
@@ -29,10 +32,39 @@ def _apply_query_overrides(
     qs["filters"]["require_binding_evidence"] = bool(require_binding_evidence)
     qs["filters"]["require_expression"] = bool(require_expression)
 
-    if pathway_mode != "auto":
-        qs.setdefault("pathway_filter", {})
+    pathway_request = qs.get("pathway_selection_request") or {}
+    pathway_context_exists = bool(
+        pathway_request.get("enabled")
+        or qs.get("phenotype_keywords")
+        or qs.get("pathway_keywords")
+        or (qs.get("phenotype_context") or {}).get("phenotype")
+    )
+    normalized_pathway_mode = str(pathway_mode or "auto").strip().lower()
+
+    qs.setdefault("pathway_filter", {})
+    qs["pathway_filter"]["min_gene_sets"] = int(qs["pathway_filter"].get("min_gene_sets", 1) or 1)
+    qs["pathway_filter"]["mode"] = "filter"
+
+    if normalized_pathway_mode == "boost":
+        debug_warnings.append("Pathway boost mode has been removed; using strict filter mode.")
+        normalized_pathway_mode = "filter"
+
+    if normalized_pathway_mode == "filter":
         qs["pathway_filter"]["enabled"] = True
-        qs["pathway_filter"]["mode"] = pathway_mode
+        qs.setdefault("pathway_selection_request", {})
+        qs["pathway_selection_request"]["enabled"] = True
+        qs["pathway_selection_request"]["strict"] = True
+    elif normalized_pathway_mode == "auto":
+        qs["pathway_filter"]["enabled"] = bool(pathway_context_exists)
+        qs.setdefault("pathway_selection_request", {})
+        qs["pathway_selection_request"]["enabled"] = bool(pathway_context_exists)
+        qs["pathway_selection_request"]["strict"] = bool(pathway_context_exists)
+    else:
+        qs["pathway_filter"]["enabled"] = bool(pathway_context_exists)
+
+    qs["pathway_mode_effective"] = "filter" if qs["pathway_filter"]["enabled"] else "none"
+    if debug_warnings:
+        qs["debug_warnings"] = debug_warnings
 
     return qs
 
@@ -60,6 +92,13 @@ def run_query_job(
             require_expression=require_expression,
             pathway_mode=pathway_mode,
         )
+        pathway_selection = resolve_pathway_selection(qs)
+        if qs.get("debug_warnings"):
+            pathway_selection.setdefault("warnings", [])
+            for warning in qs["debug_warnings"]:
+                if warning not in pathway_selection["warnings"]:
+                    pathway_selection["warnings"].append(warning)
+        qs["pathway_selection"] = pathway_selection
 
         write_job(
             query_id,
@@ -67,17 +106,20 @@ def run_query_job(
                 "status": "running",
                 "stage": "retrieval",
                 "queryspec": qs,
+                "pathway_selection": pathway_selection,
             },
         )
 
         ev = load_evidence()
-        shortlist_df, direction = retrieve_from_queryspec(ev, qs)
+        shortlist_df, direction = retrieve_from_queryspec(ev, qs, pathway_selection=pathway_selection)
+        shortlist_df = annotate_feature_percentiles(shortlist_df, ev)
         shortlist_records = shortlist_df.to_dict(orient="records")
 
         bundle = build_prompt_bundle(
             queryspec=qs,
             shortlist=shortlist_df,
             direction=direction,
+            meta={"queryspec": qs, "pathway_selection": pathway_selection},
         )
 
         write_job(
@@ -86,6 +128,7 @@ def run_query_job(
                 "status": "running",
                 "stage": "synthesis",
                 "queryspec": qs,
+                "pathway_selection": pathway_selection,
                 "shortlist": shortlist_records,
                 "bundle": bundle,
             },
@@ -97,6 +140,7 @@ def run_query_job(
             "status": "done",
             "stage": "done",
             "queryspec": qs,
+            "pathway_selection": pathway_selection,
             "shortlist": shortlist_records,
             "bundle": bundle,
             "answer": answer_obj,
