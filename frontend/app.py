@@ -654,7 +654,7 @@ def run_api_mode(api_url: str, submit_payload: dict) -> None:
     progress.progress(1.0)
 
 
-st.title("miRAssist")
+st.title("Welcome to miRAssist")
 st.caption("Enter your natural language prompt below to query the miRNA-target database")
 
 with st.sidebar:
@@ -696,9 +696,9 @@ with st.sidebar:
     sidebar_footer(APP_AUTHOR, APP_VERSION)
 
 
-st.subheader("Enter your prompt")
+st.subheader("")
 question = st.text_area(
-    "",
+    "Enter your prompt here",
     placeholder="Example: I overexpressed miR-21 and saw increased proliferation in colon cancer cells. What might it regulate?",
     height=120,
 )
