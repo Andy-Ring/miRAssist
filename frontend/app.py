@@ -111,7 +111,7 @@ st.markdown(
 
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.7.4"
+APP_VERSION = "0.7.5"
 APP_AUTHOR = "Andy Ring"
 
 
@@ -680,13 +680,7 @@ with st.sidebar:
         api_url = normalize_base_url(api_url)
         st.session_state["api_url"] = api_url
 
-        col_a, col_b = st.columns([3, 2])
-        with col_a:
-            ping = st.button("Test Connection")
-        with col_b:
-            clear = st.button("Clear")
-
-        if ping:
+                if ping:
             if not api_url:
                 st.warning("Enter an API base URL first.")
             else:
@@ -696,18 +690,7 @@ with st.sidebar:
                     st.json(out)
                 except Exception as e:
                     st.error(str(e))
-    else:
-        clear = st.button("Clear")
-        st.session_state["api_url"] = api_url
-
-    if clear:
-        clear_session_outputs()
-        st.rerun()
-
-    with st.expander("App diagnostics", expanded=False):
-        st.json(get_app_diagnostics(api_url))
-
-    sidebar_footer(APP_AUTHOR, APP_VERSION)
+       sidebar_footer(APP_AUTHOR, APP_VERSION)
 
 
 st.subheader("Ask a question")
