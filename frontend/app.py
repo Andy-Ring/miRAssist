@@ -655,7 +655,7 @@ def run_api_mode(api_url: str, submit_payload: dict) -> None:
 
 
 st.title("miRAssist")
-st.caption("Ask a question to query the miRNA-target database")
+st.caption("Enter your natural language prompt below to query the miRNA-target database")
 
 with st.sidebar:
     default_url = st.session_state.get("api_url", DEFAULT_BACKEND_URL)
@@ -696,7 +696,7 @@ with st.sidebar:
     sidebar_footer(APP_AUTHOR, APP_VERSION)
 
 
-st.subheader("Ask a question")
+st.subheader("Enter your prompt")
 question = st.text_area(
     "Question",
     placeholder="Example: I overexpressed miR-21 and saw increased proliferation in colon cancer cells. What might it regulate?",
@@ -706,9 +706,6 @@ question = st.text_area(
 st.markdown("### Override options (optional)")
 st.caption(
     "miRAssist will infer settings from your question. These controls override defaults without needing to specify in the question."
-)
-st.caption(
-    "Pathway and phenotype terms in your question are used as strict filters against the pathway database."
 )
 
 c1, c2, c3 = st.columns(3)
