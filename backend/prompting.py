@@ -23,6 +23,10 @@ Hard rules:
 - Do not infer pathway directionality unless the pathway name explicitly supports it.
 - Do not calculate percentiles yourself; use the backend-provided labels and values.
 - Do not invent feature strengths; use only the backend-provided raw values and labels.
+- Use the backend-provided evidence_support_count exactly as given.
+- Percentiles are interpretation labels for the associated feature, not separate evidence.
+- Do not count a raw feature and its percentile annotation separately.
+- Evidence support count is based on distinct evidence categories, not individual columns.
 - Do not describe computational predictions as experimental validation.
 
 Evidence interpretation rules:
@@ -53,10 +57,11 @@ Required output format:
 - For each result use this format:
 
 ### 1. GENE_OR_MIRNA
-- **Number of features supporting interaction:** X
+- **Evidence support count:** X categories
+- **Evidence categories:** miRTarBase; miRDB; TargetScan; CLIP; TCGA context; Pathway
 - **Pathways:** pathway names if pathway filtering was applied, otherwise "Not pathway-filtered"
 - **Key pieces of evidence:**
-  - compact list of the strongest raw values and backend-provided labels
+  - grouped by evidence category, with percentiles treated only as modifiers
 - **Explanation:** 2-4 sentences grounded only in the evidence card
 
 ## Final recommendation
@@ -132,7 +137,10 @@ Requirements:
 - Return EXACTLY {top_n} UNIQUE ranked {output_item} in the provided order unless fewer than {top_n} candidates passed the filters.
 - Use only the evidence cards below; do not invent extra support.
 - Do not rerank candidates based on unsupported intuition.
-- Use the backend-provided number of features, evidence categories, raw values, percentile labels, and caveats.
+- Use the backend-provided evidence support count, evidence categories, raw values, percentile labels, and caveats.
+- Use the backend-provided evidence_support_count exactly as given.
+- Percentiles are interpretation labels for the associated feature, not separate evidence.
+- Do not count raw values and percentiles separately.
 - Do not invent percentiles, feature strength labels, pathway membership, or gene-phenotype links.
 - Do not claim a candidate belongs to a pathway unless the card explicitly says it passed the pathway filter or names the pathways.
 - Use the required output structure from the system prompt.
@@ -164,19 +172,21 @@ Evidence cards:
         if raw_key_values:
             raw_value_line = "; ".join(f"{key}={value}" for key, value in raw_key_values.items())
         pathway_names = card.get("pathway_names") or []
+        evidence_categories_present = card.get("evidence_categories_present") or []
         block = [
             f"Candidate {index}: {card.get('name', 'UNKNOWN')}",
             f"miRNA: {card.get('mirna_name', '')}",
             f"Gene: {card.get('gene_symbol', '')}",
             f"Support count: {card.get('support_count', 0)}",
-            f"Number of features supporting interaction: {card.get('number_of_features_supporting_interaction', 0)}",
+            f"Evidence support count: {card.get('evidence_support_count', card.get('number_of_features_supporting_interaction', 0))} categories",
+            "Evidence categories: " + ("; ".join(evidence_categories_present) if evidence_categories_present else "None"),
             "Pathways: " + ("; ".join(pathway_names) if pathway_names else "Not pathway-filtered"),
-            "Target evidence: " + ("; ".join(card.get("target_evidence") or []) or "None"),
+            "Curated evidence: " + ("; ".join(card.get("target_evidence") or []) or "None"),
             "Published model evidence: " + ("; ".join(card.get("published_model_evidence") or []) or "None"),
-            "CLIP/binding evidence: " + ("; ".join(card.get("clip_binding_evidence") or []) or "None"),
+            "Binding evidence: " + ("; ".join(card.get("clip_binding_evidence") or []) or "None"),
             "Seed/site evidence: " + ("; ".join(card.get("seed_site_evidence") or []) or "None"),
             "Structure evidence: " + ("; ".join(card.get("structure_evidence") or []) or "None"),
-            "TCGA/context evidence: " + ("; ".join(card.get("tcga_context_evidence") or []) or "None"),
+            "Context evidence: " + ("; ".join(card.get("tcga_context_evidence") or []) or "None"),
             "Pathway evidence: " + ("; ".join(card.get("pathway_evidence") or []) or "Not pathway-filtered"),
             "Strongest features: " + ("; ".join(card.get("strongest_features") or []) or "None"),
             "Raw key values: " + raw_value_line,

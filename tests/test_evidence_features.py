@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from backend.cards import cards_from_dataframe
+from backend.evidence_interpretation import build_evidence_sections, format_percentile
 from backend.feature_stats import annotate_feature_percentiles
 from backend.prompting import build_prompt_bundle
 
@@ -91,6 +92,11 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertTrue(any("retained by strict pathway filter" in line for line in card["pathway_evidence"]))
         self.assertEqual(card["pathway_names"][0], "apoptosis")
         self.assertIn("mirdb_best_score", card["raw_key_values"])
+        self.assertEqual(card["evidence_support_count"], 8)
+        self.assertIn("miRTarBase", card["evidence_categories_present"])
+        self.assertIn("TargetScan", card["evidence_categories_present"])
+        self.assertIn("Seed/site", card["evidence_categories_present"])
+        self.assertIn("RNAhybrid/structure", card["evidence_categories_present"])
 
     def test_prompt_bundle_uses_required_headings(self) -> None:
         shortlist = self.ev.iloc[[4, 3]].copy()
@@ -125,9 +131,85 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertIn("## Results", bundle["system_prompt"])
         self.assertIn("## Final recommendation", bundle["system_prompt"])
         self.assertIn("Requested ranked results: 2", bundle["user_prompt"])
-        self.assertIn("Number of features supporting interaction", bundle["user_prompt"])
+        self.assertIn("Evidence support count", bundle["user_prompt"])
+        self.assertIn("Evidence categories:", bundle["user_prompt"])
         self.assertIn("Key pieces of evidence", bundle["system_prompt"])
         self.assertIn("Pathways:", bundle["user_prompt"])
+
+    def test_evidence_support_count_uses_categories_not_percentiles(self) -> None:
+        row = pd.Series(
+            {
+                "mirtarbase_pos": 1,
+                "mirdb_best_score": 91.5,
+                "mirdb_best_score_percentile": 96.0,
+                "mirdb_best_score_label": "exceptional",
+                "ts_context_strength": 0.932,
+                "ts_context_strength_percentile": 100.0,
+                "ts_context_strength_label": "exceptional",
+                "n_clip_sites": 7,
+                "n_clip_sites_percentile": 99.0,
+                "n_clip_sites_label": "exceptional",
+                "clip_exp_sum": 25.0,
+                "clip_exp_sum_percentile": 98.0,
+                "clip_exp_sum_label": "exceptional",
+                "BRCA_spearman_rho": -0.014,
+                "BRCA_support_tcga": 1,
+                "pathway_selected_gene": 1,
+                "pathway_selected_names": ["HALLMARK_OXIDATIVE_PHOSPHORYLATION"],
+            }
+        )
+
+        sections = build_evidence_sections(row, tcga="BRCA")
+
+        self.assertEqual(sections["evidence_support_count"], 6)
+        self.assertEqual(
+            sections["evidence_categories_present"],
+            ["miRTarBase", "miRDB", "TargetScan", "CLIP", "TCGA context", "Pathway"],
+        )
+
+    def test_clip_category_counts_once_even_with_multiple_metrics_and_percentiles(self) -> None:
+        row = pd.Series(
+            {
+                "n_clip_sites": 4,
+                "n_clip_sites_percentile": 95.0,
+                "n_clip_sites_label": "exceptional",
+                "clip_exp_sum": 20.0,
+                "clip_exp_sum_percentile": 97.0,
+                "clip_exp_sum_label": "exceptional",
+                "clip_exp_max": 10.0,
+                "clip_exp_max_percentile": 96.0,
+                "clip_exp_max_label": "exceptional",
+            }
+        )
+
+        sections = build_evidence_sections(row)
+        self.assertEqual(sections["evidence_support_count"], 1)
+        self.assertEqual(sections["evidence_categories_present"], ["CLIP"])
+
+    def test_targetscan_category_counts_once_even_with_multiple_fields(self) -> None:
+        row = pd.Series(
+            {
+                "ts_context_strength": 0.8,
+                "ts_context_strength_percentile": 93.0,
+                "ts_context_strength_label": "very high",
+                "ts_best_percentile": 98.0,
+                "ts_best_percentile_percentile": 90.0,
+                "ts_best_percentile_label": "very high",
+            }
+        )
+
+        sections = build_evidence_sections(row)
+        self.assertEqual(sections["evidence_support_count"], 1)
+        self.assertEqual(sections["evidence_categories_present"], ["TargetScan"])
+
+    def test_format_percentile_uses_correct_ordinals(self) -> None:
+        self.assertEqual(format_percentile(1), "1st percentile")
+        self.assertEqual(format_percentile(2), "2nd percentile")
+        self.assertEqual(format_percentile(3), "3rd percentile")
+        self.assertEqual(format_percentile(4), "4th percentile")
+        self.assertEqual(format_percentile(11), "11th percentile")
+        self.assertEqual(format_percentile(21), "21st percentile")
+        self.assertEqual(format_percentile(93), "93rd percentile")
 
 
 if __name__ == "__main__":
