@@ -660,7 +660,6 @@ st.caption("Ask a question to query the miRNA-target database")
 with st.sidebar:
     default_url = st.session_state.get("api_url", DEFAULT_BACKEND_URL)
     api_url = normalize_base_url(default_url)
-    clear = False
 
     with st.expander("How to use miRAssist", expanded=False):
         st.markdown(get_how_to_use_markdown())
@@ -679,8 +678,9 @@ with st.sidebar:
         )
         api_url = normalize_base_url(api_url)
         st.session_state["api_url"] = api_url
+        ping = st.button("Test Connection")
 
-                if ping:
+        if ping:
             if not api_url:
                 st.warning("Enter an API base URL first.")
             else:
@@ -690,7 +690,10 @@ with st.sidebar:
                     st.json(out)
                 except Exception as e:
                     st.error(str(e))
-       sidebar_footer(APP_AUTHOR, APP_VERSION)
+    else:
+        st.session_state["api_url"] = api_url
+
+    sidebar_footer(APP_AUTHOR, APP_VERSION)
 
 
 st.subheader("Ask a question")
