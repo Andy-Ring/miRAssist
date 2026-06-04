@@ -78,7 +78,7 @@ def _apply_query_overrides(
 def run_query_job(
     query_id: str,
     question: str,
-    k: int = 200,
+    k: int = get_default_k(),
     min_support: int = 1,
     novel: bool = True,
     require_binding_evidence: bool = False,
@@ -217,7 +217,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--query_id", required=True)
     ap.add_argument("--question", required=True)
-    ap.add_argument("--k", type=int, default=200)
+    ap.add_argument("--k", type=int, default=get_default_k())
     ap.add_argument("--min_support", type=int, default=1)
     ap.add_argument("--novel", action="store_true")
     ap.add_argument("--require_binding_evidence", action="store_true")

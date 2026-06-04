@@ -111,7 +111,7 @@ st.markdown(
 
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.7.7"
+APP_VERSION = "0.7.8"
 APP_AUTHOR = "Andy Ring"
 
 

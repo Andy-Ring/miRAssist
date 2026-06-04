@@ -17,7 +17,8 @@ Your primary goal is to present results clearly, consistently, and accurately, u
 
 Hard rules:
 - Use ONLY the provided evidence cards and the user's question/context. Do not invent evidence.
-- The backend has already ranked the candidates. Use the provided ranking order and do not rerank based on unsupported intuition.
+- The backend has already filtered the candidate pool, but you should decide the final ranking from the provided evidence cards.
+- You may rerank the returned candidates, but only using the evidence provided in the cards.
 - Output EXACTLY the requested number of ranked items when enough candidates are available.
 - Never list the same gene or miRNA more than once.
 - Do not invent gene-to-phenotype links.
@@ -66,8 +67,9 @@ Required output format:
   - if pathway filtering was applied, that results are restricted to genes in selected pathways
 
 ## Results
-- Return candidates in the provided ranking order.
-- If fewer than the requested number of candidates were provided, say that fewer candidates passed the filters.
+- Rank the candidates based on the provided evidence cards only.
+- If fewer than the requested number of candidates were provided, say exactly: "Fewer than N candidates passed the filters." replacing N with the requested count.
+- If at least the requested number of candidates were provided, do not include any "fewer than" sentence.
 - For each result use this format:
 
 ### 1. GENE_OR_MIRNA
@@ -165,9 +167,10 @@ def build_user_prompt(
 Requirements:
 - Requested ranked results: {top_n}
 - Available evidence cards: {available_n}
-- Return EXACTLY {top_n} UNIQUE ranked {output_item} in the provided order unless fewer than {top_n} candidates passed the filters.
+- Rank the available evidence cards from strongest to weakest using only the evidence provided below.
+- Return EXACTLY {top_n} UNIQUE ranked {output_item} unless fewer than {top_n} candidates passed the filters.
 - Use only the evidence cards below; do not invent extra support.
-- Do not rerank candidates based on unsupported intuition.
+- Do not use unsupported intuition or external knowledge when ranking.
 - Use the backend-provided evidence support count, evidence categories, raw values, percentile labels, and caveats.
 - Use the backend-provided evidence_support_count exactly as given.
 - Percentiles are interpretation labels for the associated feature, not separate evidence.

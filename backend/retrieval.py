@@ -10,6 +10,8 @@ import re
 import numpy as np
 import pandas as pd
 
+from backend.config import get_default_k
+
 from backend.config import get_evidence_backend, get_evidence_table, resolve_evidence_path
 
 
@@ -760,7 +762,7 @@ def retrieve_from_queryspec(
     )
 
     cfg = RetrievalConfig(
-        k_shortlist=int(queryspec.get("k", 200)),
+        k_shortlist=int(queryspec.get("k", get_default_k())),
         min_support=int(filters.get("min_support", 1)),
         novel=bool(queryspec.get("novel", False)),
         tcga=(str(tcga).upper() if tcga else None),

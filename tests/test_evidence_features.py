@@ -87,7 +87,7 @@ class FeaturePercentileTests(unittest.TestCase):
         card = cards[0]
 
         self.assertTrue(any("miRDB score 100" in line for line in card["published_model_evidence"]))
-        self.assertTrue(any("TargetScan context strength" in line for line in card["published_model_evidence"]))
+        self.assertTrue(any("TargetScan context++" in line for line in card["published_model_evidence"]))
         self.assertTrue(any("CLIP signal 10" in line and "exceptional" in line for line in card["clip_binding_evidence"]))
         self.assertTrue(any("Retained by strict pathway filter" in line for line in card["pathway_evidence"]))
         self.assertEqual(card["pathway_names"][0], "apoptosis")
@@ -99,7 +99,7 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertIn("RNAhybrid/structure", card["evidence_categories_present"])
         self.assertEqual(card["primary_mirdb_evidence"], "miRDB score 100 (100th percentile; exceptional; very strong model support)")
         self.assertEqual(card["primary_clip_evidence"], "CLIP signal 10 (100th percentile; exceptional)")
-        self.assertIn("TargetScan context strength", card["primary_targetscan_evidence"])
+        self.assertIn("TargetScan context++", card["primary_targetscan_evidence"])
         self.assertNotIn("miRDB mean score", " ".join(card["published_model_evidence"]))
 
     def test_prompt_bundle_uses_required_headings(self) -> None:
@@ -157,6 +157,8 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertIn("breadth, not strength", bundle["system_prompt"])
         self.assertIn("Target-role interpretation:", bundle["user_prompt"])
         self.assertIn("deterministic pathway annotations", bundle["user_prompt"])
+        self.assertIn("you should decide the final ranking", bundle["system_prompt"])
+        self.assertNotIn("provided order", bundle["user_prompt"])
 
     def test_evidence_support_count_uses_categories_not_percentiles(self) -> None:
         row = pd.Series(
@@ -277,6 +279,7 @@ class FeaturePercentileTests(unittest.TestCase):
     def test_targetscan_primary_display_uses_context_strength(self) -> None:
         row = pd.Series(
             {
+                "ts_best_contextpp": -0.932,
                 "ts_context_strength": 0.932,
                 "ts_context_strength_percentile": 100.0,
                 "ts_context_strength_label": "exceptional",
@@ -289,11 +292,11 @@ class FeaturePercentileTests(unittest.TestCase):
         sections = build_evidence_sections(row)
         self.assertEqual(
             sections["primary_targetscan_evidence"],
-            "TargetScan context strength 0.932 (100th percentile; exceptional)",
+            "TargetScan context++ -0.932 (100th percentile; exceptional; more negative is stronger)",
         )
         self.assertEqual(
             sections["published_model_evidence"],
-            ["TargetScan context strength 0.932 (100th percentile; exceptional)"],
+            ["TargetScan context++ -0.932 (100th percentile; exceptional; more negative is stronger)"],
         )
 
     def test_seed_site_zero_sites_not_presented_as_positive_key_evidence(self) -> None:

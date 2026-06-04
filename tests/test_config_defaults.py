@@ -6,6 +6,7 @@ from unittest.mock import patch
 import os
 
 from backend.config import get_default_k, get_default_result_count, get_synth_max_tokens
+from backend.worker import run_query_job
 
 
 class ConfigDefaultsTests(unittest.TestCase):
@@ -23,6 +24,9 @@ class ConfigDefaultsTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("MIRASSIST_SYNTH_MAX_TOKENS", None)
             self.assertEqual(get_synth_max_tokens(), 2500)
+
+    def test_worker_default_k_uses_config_default(self) -> None:
+        self.assertEqual(run_query_job.__defaults__[0], 10)
 
 
 if __name__ == "__main__":

@@ -298,14 +298,21 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
         evidence_categories["mirdb_model"] = True
 
     ts_strength = _as_float(row.get("ts_context_strength"))
-    if np.isfinite(ts_strength):
-        targetscan_line = f"TargetScan context strength {ts_strength:g}{_annotation_suffix(row, 'ts_context_strength')}"
+    ts_best_contextpp = _as_float(row.get("ts_best_contextpp"))
+    if np.isfinite(ts_best_contextpp):
+        targetscan_line = (
+            f"TargetScan context++ {ts_best_contextpp:.3f}"
+            f"{_annotation_suffix(row, 'ts_context_strength', ['more negative is stronger'])}"
+        )
         published_model_evidence.append(targetscan_line)
         primary_evidence_by_category["targetscan"] = targetscan_line
         strongest_features.append(targetscan_line)
         evidence_categories["targetscan_model"] = True
-    elif np.isfinite(_as_float(row.get("ts_best_contextpp"))):
-        targetscan_line = f"TargetScan context++ {float(row.get('ts_best_contextpp')):.3f}"
+    elif np.isfinite(ts_strength):
+        targetscan_line = (
+            f"TargetScan context strength {ts_strength:g}"
+            f"{_annotation_suffix(row, 'ts_context_strength')}"
+        )
         published_model_evidence.append(targetscan_line)
         primary_evidence_by_category["targetscan"] = targetscan_line
         strongest_features.append(targetscan_line)
