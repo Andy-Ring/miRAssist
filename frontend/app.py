@@ -17,7 +17,6 @@ import streamlit as st
 from backend.config import (
     database_configured,
     get_app_mode,
-    get_debug_ui,
     get_evidence_backend,
     get_jobstore_backend,
     get_llm_backend,
@@ -62,7 +61,6 @@ load_local_dotenv()
 
 APP_MODE = get_app_mode()
 DEFAULT_BACKEND_URL = resolve_backend_url()
-DEBUG_UI = get_debug_ui()
 
 
 st.set_page_config(page_title="miRAssist", layout="wide")
@@ -769,13 +767,6 @@ err = st.session_state.get("last_error")
 if err:
     st.error(err)
 
-    if DEBUG_UI:
-        with st.expander("Debug: last status", expanded=False):
-            st.json(st.session_state.get("last_status", {}))
-
-        with st.expander("Debug: submit response", expanded=False):
-            st.json(st.session_state.get("last_submit_response", {}))
-
 
 result = st.session_state.get("last_result")
 if result:
@@ -783,15 +774,6 @@ if result:
 
     if result_status in {"error", "failed", "not_found"}:
         st.error(result.get("error", f"Backend returned status: {result_status}"))
-
-        if DEBUG_UI:
-            tb = result.get("traceback")
-            if tb:
-                with st.expander("Traceback"):
-                    st.code(tb)
-
-            with st.expander("Debug: full result JSON", expanded=False):
-                st.json(result)
     else:
         st.markdown("## Answer")
 
@@ -829,17 +811,6 @@ if result:
                     "in the result payload, or it is stored under a response key not yet handled."
                 )
 
-                if DEBUG_UI:
-                    debug_candidates = extract_planner_debug_candidates(result)
-                    if debug_candidates:
-                        st.markdown("#### Planner-like/debug objects found")
-                        st.json(debug_candidates)
-                    else:
-                        st.info("No planner-like debug objects were found in the result payload.")
-
-                    st.markdown("#### Full result JSON")
-                    st.json(result)
-
         with st.expander("Evidence shortlist", expanded=False):
             shortlist = result.get("shortlist", [])
             if isinstance(shortlist, list) and len(shortlist) > 0:
@@ -847,70 +818,3 @@ if result:
                 st.dataframe(df, use_container_width=True)
             else:
                 st.info("Shortlist is empty.")
-
-        if DEBUG_UI:
-            with st.expander("Pathway selection", expanded=False):
-                pathway_selection = result.get("pathway_selection") or queryspec.get("pathway_selection") or {}
-                if pathway_selection.get("enabled"):
-                    st.json(
-                        {
-                            "enabled": pathway_selection.get("enabled"),
-                            "mode": pathway_selection.get("mode"),
-                            "phenotype": pathway_selection.get("phenotype"),
-                            "direction": pathway_selection.get("direction"),
-                            "query_terms": pathway_selection.get("query_terms"),
-                            "selected_pathways": pathway_selection.get("selected_pathways"),
-                            "n_selected_pathways": pathway_selection.get("n_selected_pathways"),
-                            "n_selected_genes": pathway_selection.get("n_selected_genes"),
-                            "selected_gene_examples": pathway_selection.get("selected_gene_examples"),
-                            "warnings": pathway_selection.get("warnings"),
-                        }
-                    )
-                else:
-                    st.info("No pathway filtering applied.")
-
-            with st.expander("Retrieval diagnostics", expanded=False):
-                retrieval_diagnostics = result.get("retrieval_diagnostics") or {}
-                if retrieval_diagnostics:
-                    st.json(retrieval_diagnostics)
-                else:
-                    st.info("No retrieval diagnostics were included in the result payload.")
-
-            with st.expander("Card generation diagnostics", expanded=False):
-                card_generation_diagnostics = result.get("card_generation_diagnostics") or {}
-                if card_generation_diagnostics:
-                    st.json(card_generation_diagnostics)
-                else:
-                    st.info("No card generation diagnostics were included in the result payload.")
-
-            with st.expander("Feature percentile annotations", expanded=False):
-                shortlist = result.get("shortlist", [])
-                if isinstance(shortlist, list) and len(shortlist) > 0:
-                    df = pd.DataFrame(shortlist)
-                    feature_cols = [
-                        col
-                        for col in df.columns
-                        if str(col).endswith("_percentile") or str(col).endswith("_label")
-                    ]
-                    if feature_cols:
-                        identity_cols = [col for col in ["mirna_name", "gene_symbol"] if col in df.columns]
-                        st.dataframe(df[identity_cols + feature_cols], use_container_width=True)
-                    else:
-                        st.info("No feature percentile annotations were present in the shortlist.")
-                else:
-                    st.info("Shortlist is empty.")
-
-            with st.expander("Debug: answer JSON", expanded=False):
-                answer_obj = extract_answer_obj(result)
-                if answer_obj is None:
-                    answer_obj = {}
-                st.json(answer_obj)
-
-            with st.expander("Debug: submit response", expanded=False):
-                st.json(st.session_state.get("last_submit_response", {}))
-
-            with st.expander("Debug: last status", expanded=False):
-                st.json(st.session_state.get("last_status", {}))
-
-            with st.expander("Debug: full result JSON", expanded=False):
-                st.json(result)
