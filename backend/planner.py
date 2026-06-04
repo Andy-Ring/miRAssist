@@ -130,6 +130,22 @@ _PHENOTYPE_PATTERNS = [
     (re.compile(r"\b(energy metabolism|metabolism|metabolic reprogramming)\b", re.IGNORECASE), "energy metabolism"),
 ]
 _DIRECTIONAL_PATHWAY_TERMS = {
+    "cell migration": {
+        "negative_regulator": [
+            "negative regulation of cell migration",
+            "negative regulation of migration",
+            "negative regulation of cell motility",
+            "cell migration suppressor",
+            "migration inhibition",
+        ],
+        "positive_regulator": [
+            "positive regulation of cell migration",
+            "positive regulation of migration",
+            "positive regulation of cell motility",
+            "cell migration",
+            "cell motility",
+        ],
+    },
     "apoptosis": {
         "negative_regulator": [
             "negative regulation of apoptosis",
@@ -515,7 +531,10 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
         for term in (qs["pathway_selection_request"].get("directional_query_terms") or [])
         if str(term).strip()
     ]
-    if directional_terms:
+    expected_role = (qs.get("target_role_inference") or {}).get("expected_target_effect_on_phenotype")
+    if directional_terms and expected_role in {"positive_regulator", "negative_regulator"}:
+        qs["pathway_selection_request"]["directional_query_terms"] = directional_terms
+    elif directional_terms:
         qs["pathway_selection_request"]["directional_query_terms"] = list(
             dict.fromkeys(directional_terms + existing_directional_terms)
         )

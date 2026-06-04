@@ -383,6 +383,49 @@ class PlannerNormalizationTests(unittest.TestCase):
             qs["pathway_selection_request"]["directional_query_terms"],
         )
 
+    def test_overexpression_increased_cell_migration_replaces_conflicting_directional_terms(self) -> None:
+        qs = _validate_and_fill(
+            {
+                "mode": "mirna_to_targets",
+                "mirna": "miRNA 3065",
+                "phenotype_context": {"phenotype": "cell migration"},
+                "pathway_selection_request": {
+                    "enabled": True,
+                    "query_terms": ["cell migration", "migration", "cell motility"],
+                    "directional_query_terms": [
+                        "positive regulation of cell migration",
+                        "positive regulation of migration",
+                        "positive regulation of cell motility",
+                    ],
+                    "strict": True,
+                },
+                "phenotype_keywords": ["cell migration", "migration", "cell motility"],
+                "pathway_keywords": ["cell migration", "migration", "cell motility"],
+                "pathway_filter": {"enabled": True, "mode": "filter", "min_gene_sets": 2},
+                "filters": {"min_support": 2, "require_binding_evidence": False, "require_expression": False},
+            },
+            "I'm interested in miRNA 3065 and when i overexpress it, it causes an increase in cell migration. What genes might it be regulating to cause this?",
+        )
+
+        self.assertEqual(
+            qs["target_role_inference"]["expected_target_effect_on_phenotype"],
+            "negative_regulator",
+        )
+        self.assertEqual(
+            qs["pathway_selection_request"]["directional_query_terms"],
+            [
+                "negative regulation of cell migration",
+                "negative regulation of migration",
+                "negative regulation of cell motility",
+                "cell migration suppressor",
+                "migration inhibition",
+            ],
+        )
+        self.assertNotIn(
+            "positive regulation of cell migration",
+            qs["pathway_selection_request"]["directional_query_terms"],
+        )
+
     def test_overexpression_increased_apoptosis_infers_negative_regulator_targets(self) -> None:
         inference = infer_expected_target_role(
             {
