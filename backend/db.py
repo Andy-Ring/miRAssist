@@ -22,17 +22,26 @@ def normalize_database_url(database_url: str) -> str:
     return url
 
 
+def _build_engine_kwargs(resolved_url: str) -> dict:
+    kwargs = {
+        "future": True,
+        "pool_pre_ping": True,
+    }
+    if resolved_url.startswith("postgresql+psycopg://"):
+        # Supabase commonly uses a PgBouncer-style pooler. Psycopg's docs recommend
+        # disabling automatic prepared statements in that setup unless the pooler
+        # explicitly supports them end-to-end.
+        kwargs["connect_args"] = {"prepare_threshold": None}
+    return kwargs
+
+
 def get_database_engine(database_url: Optional[str] = None) -> Optional[Engine]:
     resolved_url = normalize_database_url(database_url or get_database_url() or "")
     if not resolved_url:
         return None
 
     if resolved_url not in _ENGINE_CACHE:
-        _ENGINE_CACHE[resolved_url] = create_engine(
-            resolved_url,
-            future=True,
-            pool_pre_ping=True,
-        )
+        _ENGINE_CACHE[resolved_url] = create_engine(resolved_url, **_build_engine_kwargs(resolved_url))
     return _ENGINE_CACHE[resolved_url]
 
 
