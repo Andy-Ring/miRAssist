@@ -6,7 +6,11 @@ from unittest.mock import patch
 import pandas as pd
 
 from backend.cards import cards_from_dataframe_with_diagnostics
-from backend.planner import _validate_and_fill
+from backend.planner import (
+    _validate_and_fill,
+    build_directional_query_terms,
+    infer_expected_target_role,
+)
 from backend.pathways import compact_pathway_selection, resolve_pathway_selection
 from backend.retrieval import retrieve_from_queryspec
 from backend.worker import _apply_query_overrides
@@ -14,20 +18,28 @@ from backend.worker import _apply_query_overrides
 
 def _base_queryspec() -> dict:
     return {
-        "original_question": "Does miR-34a promote apoptosis?",
+        "original_question": "I overexpressed miR-34a and apoptosis increased.",
         "mode": "mirna_to_targets",
         "mirna": "miR-34a",
         "gene": None,
         "cancer": {"name": None, "tcga": None},
         "phenotype_context": {
             "phenotype": "apoptosis",
-            "direction": "promotes",
-            "raw_phrase": "promotes apoptosis",
+            "observed_change": "increased",
+            "miRNA_perturbation": "overexpression",
+            "direction": "increases",
+            "raw_phrase": "I overexpressed miR-34a and apoptosis increased.",
+        },
+        "target_role_inference": {
+            "enabled": True,
+            "assumption": "miRNAs usually repress target gene expression",
+            "expected_target_effect_on_phenotype": "negative_regulator",
+            "reasoning": "The user reported miRNA overexpression increased apoptosis.",
         },
         "pathway_selection_request": {
             "enabled": True,
             "query_terms": ["apoptosis"],
-            "directional_query_terms": ["positive regulation of apoptosis"],
+            "directional_query_terms": ["negative regulation of apoptosis"],
             "strict": True,
         },
         "phenotype_keywords": ["apoptosis"],
@@ -35,6 +47,7 @@ def _base_queryspec() -> dict:
         "pathway_filter": {"enabled": True, "mode": "filter", "min_gene_sets": 1},
         "novel": False,
         "k": 25,
+        "result_count": 5,
         "filters": {
             "min_support": 1,
             "require_binding_evidence": False,
@@ -84,7 +97,7 @@ class PathwayResolverTests(unittest.TestCase):
             ]
         )
 
-    def test_promotes_apoptosis_selects_positive_pathways(self) -> None:
+    def test_overexpression_increased_apoptosis_selects_negative_regulator_pathways(self) -> None:
         qs = _base_queryspec()
         with patch("backend.pathways.load_pathways", return_value=self.pathways_df), patch(
             "backend.pathways.load_gene_to_pathways", return_value=self.gene_to_pathways_df
@@ -94,16 +107,21 @@ class PathwayResolverTests(unittest.TestCase):
         self.assertTrue(selection["enabled"])
         self.assertEqual(selection["mode"], "filter")
         self.assertEqual(selection["phenotype"], "apoptosis")
-        self.assertEqual(selection["direction"], "promotes")
+        self.assertEqual(selection["direction"], "increases")
+        self.assertEqual(selection["observed_change"], "increased")
+        self.assertEqual(selection["miRNA_perturbation"], "overexpression")
+        self.assertEqual(selection["expected_target_effect_on_phenotype"], "negative_regulator")
         self.assertGreaterEqual(selection["n_selected_pathways"], 1)
-        self.assertIn("BAX", selection["_selected_gene_set"])
+        self.assertIn("BCL2", selection["_selected_gene_set"])
 
-    def test_suppresses_apoptosis_selects_negative_pathways(self) -> None:
+    def test_overexpression_decreased_apoptosis_selects_positive_regulator_pathways(self) -> None:
         qs = _base_queryspec()
-        qs["phenotype_context"]["direction"] = "suppresses"
-        qs["phenotype_context"]["raw_phrase"] = "suppresses apoptosis"
+        qs["phenotype_context"]["observed_change"] = "decreased"
+        qs["phenotype_context"]["direction"] = "decreases"
+        qs["phenotype_context"]["raw_phrase"] = "I overexpressed miR-34a and apoptosis decreased."
+        qs["target_role_inference"] = infer_expected_target_role(qs["phenotype_context"])
         qs["pathway_selection_request"]["directional_query_terms"] = [
-            "negative regulation of apoptosis"
+            "positive regulation of apoptosis"
         ]
         with patch("backend.pathways.load_pathways", return_value=self.pathways_df), patch(
             "backend.pathways.load_gene_to_pathways", return_value=self.gene_to_pathways_df
@@ -111,12 +129,18 @@ class PathwayResolverTests(unittest.TestCase):
             selection = resolve_pathway_selection(qs)
 
         selected_names = [item["pathway_name"] for item in selection["selected_pathways"]]
-        self.assertIn("negative regulation of apoptosis", selected_names)
-        self.assertIn("BCL2", selection["_selected_gene_set"])
+        self.assertIn("positive regulation of apoptosis", selected_names)
+        self.assertIn("BAX", selection["_selected_gene_set"])
 
     def test_missing_files_no_context_does_not_crash(self) -> None:
         qs = _base_queryspec()
-        qs["phenotype_context"] = {"phenotype": None, "direction": None, "raw_phrase": None}
+        qs["phenotype_context"] = {
+            "phenotype": None,
+            "observed_change": None,
+            "miRNA_perturbation": None,
+            "direction": None,
+            "raw_phrase": None,
+        }
         qs["pathway_selection_request"] = {
             "enabled": False,
             "query_terms": [],
@@ -145,8 +169,16 @@ class PathwayResolverTests(unittest.TestCase):
         qs = {
             "phenotype_context": {
                 "phenotype": "energy metabolism",
+                "observed_change": "associated",
+                "miRNA_perturbation": "unknown",
                 "direction": "associated",
                 "raw_phrase": "involved in energy metabolism",
+            },
+            "target_role_inference": {
+                "enabled": True,
+                "assumption": "miRNAs usually repress target gene expression",
+                "expected_target_effect_on_phenotype": "unknown",
+                "reasoning": "The user did not provide a confident miRNA perturbation direction.",
             },
             "pathway_selection_request": {
                 "enabled": True,
@@ -169,6 +201,41 @@ class PathwayResolverTests(unittest.TestCase):
         self.assertIn("HALLMARK_GLYCOLYSIS", selected_names)
         self.assertIn("HALLMARK_OXIDATIVE_PHOSPHORYLATION", selected_names)
         self.assertEqual(compact_pathway_selection(selection)["selected_gene_examples"], ["LDHA", "NDUFA4"])
+
+    def test_associated_context_uses_general_terms_not_directional_pathways(self) -> None:
+        qs = {
+            "phenotype_context": {
+                "phenotype": "proliferation",
+                "observed_change": "associated",
+                "miRNA_perturbation": "unknown",
+                "direction": "associated",
+                "raw_phrase": "miR-X is associated with proliferation.",
+            },
+            "target_role_inference": {
+                "enabled": True,
+                "assumption": "miRNAs usually repress target gene expression",
+                "expected_target_effect_on_phenotype": "unknown",
+                "reasoning": "Unknown perturbation direction.",
+            },
+            "pathway_selection_request": {
+                "enabled": True,
+                "query_terms": ["proliferation"],
+                "directional_query_terms": [],
+                "strict": True,
+            },
+            "phenotype_keywords": ["proliferation"],
+            "pathway_keywords": [],
+            "pathway_filter": {"enabled": True, "mode": "filter", "min_gene_sets": 1},
+        }
+
+        with patch("backend.pathways.load_pathways", return_value=self.pathways_df), patch(
+            "backend.pathways.load_gene_to_pathways", return_value=self.gene_to_pathways_df
+        ):
+            query_terms = compact_pathway_selection(resolve_pathway_selection(qs))["query_terms"]
+        query_terms_lower = [term.lower() for term in query_terms]
+        self.assertIn("proliferation", query_terms_lower)
+        self.assertNotIn("negative regulation of cell proliferation", query_terms_lower)
+        self.assertNotIn("positive regulation of cell proliferation", query_terms_lower)
 
 
 class RetrievalPathwayFilterTests(unittest.TestCase):
@@ -265,6 +332,107 @@ class PathwayModeCompatibilityTests(unittest.TestCase):
 
 
 class PlannerNormalizationTests(unittest.TestCase):
+    def test_overexpression_increased_proliferation_infers_negative_regulator_targets(self) -> None:
+        qs = _validate_and_fill(
+            {
+                "mode": "mirna_to_targets",
+                "mirna": "miR-X",
+                "phenotype_context": {"phenotype": "proliferation"},
+                "pathway_selection_request": {"enabled": True, "query_terms": [], "directional_query_terms": [], "strict": True},
+                "phenotype_keywords": ["proliferation"],
+                "pathway_keywords": [],
+                "pathway_filter": {"enabled": True, "mode": "filter", "min_gene_sets": 1},
+                "filters": {"min_support": 1, "require_binding_evidence": False, "require_expression": False},
+            },
+            "I overexpressed miR-X and proliferation increased.",
+        )
+
+        self.assertEqual(qs["phenotype_context"]["miRNA_perturbation"], "overexpression")
+        self.assertEqual(qs["phenotype_context"]["observed_change"], "increased")
+        self.assertEqual(qs["phenotype_context"]["phenotype"], "proliferation")
+        self.assertEqual(
+            qs["target_role_inference"]["expected_target_effect_on_phenotype"],
+            "negative_regulator",
+        )
+        self.assertIn(
+            "negative regulation of cell proliferation",
+            qs["pathway_selection_request"]["directional_query_terms"],
+        )
+
+    def test_overexpression_decreased_proliferation_infers_positive_regulator_targets(self) -> None:
+        qs = _validate_and_fill(
+            {
+                "mode": "mirna_to_targets",
+                "mirna": "miR-X",
+                "phenotype_context": {"phenotype": "proliferation"},
+                "pathway_selection_request": {"enabled": True, "query_terms": [], "directional_query_terms": [], "strict": True},
+                "phenotype_keywords": ["proliferation"],
+                "pathway_keywords": [],
+                "pathway_filter": {"enabled": True, "mode": "filter", "min_gene_sets": 1},
+                "filters": {"min_support": 1, "require_binding_evidence": False, "require_expression": False},
+            },
+            "I overexpressed miR-X and proliferation decreased.",
+        )
+
+        self.assertEqual(
+            qs["target_role_inference"]["expected_target_effect_on_phenotype"],
+            "positive_regulator",
+        )
+        self.assertIn(
+            "positive regulation of cell proliferation",
+            qs["pathway_selection_request"]["directional_query_terms"],
+        )
+
+    def test_overexpression_increased_apoptosis_infers_negative_regulator_targets(self) -> None:
+        inference = infer_expected_target_role(
+            {
+                "phenotype": "apoptosis",
+                "observed_change": "increased",
+                "miRNA_perturbation": "overexpression",
+                "raw_phrase": "I overexpressed miR-X and apoptosis increased.",
+            }
+        )
+        self.assertEqual(inference["expected_target_effect_on_phenotype"], "negative_regulator")
+
+    def test_overexpression_decreased_apoptosis_infers_positive_regulator_targets(self) -> None:
+        inference = infer_expected_target_role(
+            {
+                "phenotype": "apoptosis",
+                "observed_change": "decreased",
+                "miRNA_perturbation": "overexpression",
+                "raw_phrase": "I overexpressed miR-X and apoptosis decreased.",
+            }
+        )
+        self.assertEqual(inference["expected_target_effect_on_phenotype"], "positive_regulator")
+
+    def test_associated_query_keeps_target_role_unknown(self) -> None:
+        qs = _validate_and_fill(
+            {
+                "mode": "mirna_to_targets",
+                "mirna": "miR-X",
+                "pathway_selection_request": {"enabled": True, "query_terms": [], "directional_query_terms": [], "strict": True},
+                "phenotype_keywords": ["proliferation"],
+                "pathway_keywords": [],
+                "pathway_filter": {"enabled": True, "mode": "filter", "min_gene_sets": 1},
+                "filters": {"min_support": 1, "require_binding_evidence": False, "require_expression": False},
+            },
+            "miR-X is associated with proliferation.",
+        )
+
+        self.assertEqual(qs["phenotype_context"]["miRNA_perturbation"], "unknown")
+        self.assertEqual(qs["phenotype_context"]["observed_change"], "associated")
+        self.assertEqual(
+            qs["target_role_inference"]["expected_target_effect_on_phenotype"],
+            "unknown",
+        )
+        self.assertEqual(
+            build_directional_query_terms(
+                qs["phenotype_context"]["phenotype"],
+                qs["target_role_inference"]["expected_target_effect_on_phenotype"],
+            ),
+            [],
+        )
+
     def test_breast_cancer_maps_to_brca_and_optional_clarifications(self) -> None:
         qs = _validate_and_fill(
             {
@@ -274,6 +442,8 @@ class PlannerNormalizationTests(unittest.TestCase):
                 "cancer": {"name": "breast cancer cells", "tcga": None},
                 "phenotype_context": {
                     "phenotype": "energy metabolism",
+                    "observed_change": "associated",
+                    "miRNA_perturbation": "unknown",
                     "direction": "associated",
                     "raw_phrase": "involved in energy metabolism",
                 },

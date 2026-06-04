@@ -8,6 +8,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import pandas as pd
 
 from backend.config import ROOT_DIR
+from backend.planner import build_directional_query_terms
 
 
 PATHWAYS_DIR = ROOT_DIR / "data" / "processed" / "pathways"
@@ -99,6 +100,7 @@ def _pick_column(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
 def _build_pathway_query_terms(queryspec: Dict[str, Any]) -> List[str]:
     pathway_request = queryspec.get("pathway_selection_request") or {}
     phenotype_context = queryspec.get("phenotype_context") or {}
+    target_role_inference = queryspec.get("target_role_inference") or {}
 
     terms: List[str] = []
     for source in (
@@ -113,8 +115,11 @@ def _build_pathway_query_terms(queryspec: Dict[str, Any]) -> List[str]:
                 terms.append(text)
 
     phenotype = str(phenotype_context.get("phenotype") or "").strip()
-    direction = str(phenotype_context.get("direction") or "").strip().lower()
+    observed_change = str(phenotype_context.get("observed_change") or "").strip().lower()
     raw_phrase = str(phenotype_context.get("raw_phrase") or "").strip()
+    expected_target_role = str(
+        target_role_inference.get("expected_target_effect_on_phenotype") or ""
+    ).strip().lower()
 
     if raw_phrase:
         terms.append(raw_phrase)
@@ -123,26 +128,10 @@ def _build_pathway_query_terms(queryspec: Dict[str, Any]) -> List[str]:
 
     synonym_terms = _PHENOTYPE_SYNONYMS.get(phenotype.lower(), [])
     terms.extend(synonym_terms)
+    terms.extend(build_directional_query_terms(phenotype, expected_target_role))
 
-    if phenotype.lower() == "apoptosis":
-        if direction in {"promotes", "increases"}:
-            terms.extend(
-                [
-                    "positive regulation of apoptosis",
-                    "positive regulation of apoptotic process",
-                    "activation of apoptotic signaling pathway",
-                    "apoptotic process",
-                ]
-            )
-        elif direction in {"suppresses", "decreases"}:
-            terms.extend(
-                [
-                    "negative regulation of apoptosis",
-                    "negative regulation of apoptotic process",
-                    "anti apoptotic",
-                    "regulation of apoptotic signaling pathway",
-                ]
-            )
+    if phenotype.lower() == "apoptosis" and observed_change == "associated":
+        terms.append("apoptotic process")
 
     seen = set()
     ordered_terms: List[str] = []
@@ -171,6 +160,9 @@ def compact_pathway_selection(selection: Dict[str, Any], include_internal: bool 
         "mode": selection.get("mode", "none"),
         "phenotype": selection.get("phenotype"),
         "direction": selection.get("direction"),
+        "observed_change": selection.get("observed_change"),
+        "miRNA_perturbation": selection.get("miRNA_perturbation"),
+        "expected_target_effect_on_phenotype": selection.get("expected_target_effect_on_phenotype"),
         "query_terms": list(selection.get("query_terms") or []),
         "selected_pathways": list(selection.get("selected_pathways") or []),
         "n_selected_pathways": int(selection.get("n_selected_pathways") or 0),
@@ -192,6 +184,7 @@ def compact_pathway_selection(selection: Dict[str, Any], include_internal: bool 
 
 def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
     phenotype_context = queryspec.get("phenotype_context") or {}
+    target_role_inference = queryspec.get("target_role_inference") or {}
     enabled = _pathway_context_enabled(queryspec)
 
     selection: Dict[str, Any] = {
@@ -199,6 +192,11 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
         "mode": "filter" if enabled else "none",
         "phenotype": phenotype_context.get("phenotype"),
         "direction": phenotype_context.get("direction"),
+        "observed_change": phenotype_context.get("observed_change"),
+        "miRNA_perturbation": phenotype_context.get("miRNA_perturbation"),
+        "expected_target_effect_on_phenotype": target_role_inference.get(
+            "expected_target_effect_on_phenotype"
+        ),
         "query_terms": [],
         "selected_pathways": [],
         "n_selected_pathways": 0,

@@ -23,6 +23,7 @@ Hard rules:
 - Do not invent gene-to-phenotype links.
 - Do not invent pathway membership.
 - Do not infer pathway directionality unless the pathway name explicitly supports it.
+- Do not imply that the miRNA directly activates or induces target gene expression.
 - Do not calculate percentiles yourself; use the backend-provided labels and values.
 - Do not invent feature strengths; use only the backend-provided raw values and labels.
 - Use the backend-provided evidence_support_count exactly as given.
@@ -46,6 +47,8 @@ Evidence interpretation rules:
 - ENCORI/CLIP supports binding evidence, not necessarily repression.
 - TCGA context evidence is context-specific repression support, not direct binding evidence.
 - Pathway evidence only means the candidate passed the deterministic pathway filter or has explicit pathway names in the card.
+- If the backend provides a target-role interpretation, describe it as a candidate interpretation that is consistent with miRNA-mediated repression and grounded in pathway annotations.
+- Phrase directional context as "consistent with" or "candidate target interpretation", not as proof that the target gene caused the phenotype.
 
 Novel mode rules:
 - In novel mode, miRTarBase functional pairs must NOT appear in the ranked list.
@@ -93,6 +96,8 @@ def build_user_prompt(
     phenotype_keywords: Optional[List[str]] = None,
     pathway_keywords: Optional[List[str]] = None,
     pathway_selection: Optional[Dict[str, Any]] = None,
+    phenotype_context: Optional[Dict[str, Any]] = None,
+    target_role_inference: Optional[Dict[str, Any]] = None,
     cards: List[Dict[str, Any]],
     needs_clarification: Optional[List[str]] = None,
     requested_results: Optional[int] = None,
@@ -101,6 +106,8 @@ def build_user_prompt(
     phenotype_keywords = phenotype_keywords or []
     pathway_keywords = pathway_keywords or []
     pathway_selection = pathway_selection or {}
+    phenotype_context = phenotype_context or {}
+    target_role_inference = target_role_inference or {}
     needs_clarification = needs_clarification or []
     retrieval_diagnostics = retrieval_diagnostics or {}
 
@@ -131,6 +138,18 @@ def build_user_prompt(
             ctx_lines.append(f"- Selected pathways: {', '.join(selected_names[:8])}")
         if pathway_selection.get("warnings"):
             ctx_lines.append(f"- Pathway warnings: {'; '.join(pathway_selection.get('warnings') or [])}")
+    if target_role_inference.get("enabled"):
+        reasoning = str(target_role_inference.get("reasoning") or "").strip()
+        if reasoning:
+            ctx_lines.append(f"- Target-role interpretation: {reasoning}")
+    if pathway_selection.get("enabled") and target_role_inference.get("enabled"):
+        phenotype = phenotype_context.get("phenotype")
+        expected_role = target_role_inference.get("expected_target_effect_on_phenotype")
+        if phenotype and expected_role in {"positive_regulator", "negative_regulator"}:
+            ctx_lines.append(
+                "- Pathway grounding: directional pathway filtering was based on deterministic pathway annotations "
+                f"for {expected_role.replace('_', ' ')} genes in {phenotype}, not on invented gene memberships."
+            )
     if novel:
         ctx_lines.append("- Mode: NOVEL (exclude miRTarBase functional interactions from ranked list)")
     if needs_clarification:
@@ -160,6 +179,7 @@ Requirements:
 - A candidate with more categories may still be lower confidence if most values are weak or typical.
 - Do not invent percentiles, feature strength labels, pathway membership, or gene-phenotype links.
 - Do not claim a candidate belongs to a pathway unless the card explicitly says it passed the pathway filter or names the pathways.
+- If directional phenotype logic is provided, explain it as a repression-consistent candidate-target interpretation rather than proof of causality.
 - Use the required output structure from the system prompt.
 
 User question:
@@ -287,6 +307,8 @@ def build_prompt_bundle(
     if needs_clarification is None:
         needs_clarification = qs.get("needs_clarification") or []
     pathway_selection = qs.get("pathway_selection") or {}
+    phenotype_context = qs.get("phenotype_context") or {}
+    target_role_inference = qs.get("target_role_inference") or {}
     requested_results = qs.get("result_count")
     if requested_results in (None, "", 0):
         requested_results = get_default_result_count()
@@ -309,6 +331,8 @@ def build_prompt_bundle(
         phenotype_keywords=phenotype_keywords or [],
         pathway_keywords=pathway_keywords or [],
         pathway_selection=pathway_selection,
+        phenotype_context=phenotype_context,
+        target_role_inference=target_role_inference,
         cards=cards,
         needs_clarification=needs_clarification or [],
         requested_results=int(requested_results) if requested_results is not None else None,

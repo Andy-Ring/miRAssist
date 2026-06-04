@@ -119,6 +119,19 @@ class FeaturePercentileTests(unittest.TestCase):
                 "mode": "mirna_to_targets",
                 "mirna": "hsa-let-7a-2-3p",
                 "cancer": {"name": "breast cancer", "tcga": "BRCA"},
+                "phenotype_context": {
+                    "phenotype": "proliferation",
+                    "observed_change": "increased",
+                    "miRNA_perturbation": "overexpression",
+                    "direction": "increases",
+                    "raw_phrase": "I overexpressed hsa-let-7a-2-3p and proliferation increased.",
+                },
+                "target_role_inference": {
+                    "enabled": True,
+                    "assumption": "miRNAs usually repress target gene expression",
+                    "expected_target_effect_on_phenotype": "negative_regulator",
+                    "reasoning": "The user reported miRNA overexpression increased proliferation. Since miRNAs usually repress target genes, miRAssist prioritized negative regulators of proliferation.",
+                },
                 "novel": True,
                 "k": 10,
                 "pathway_selection": {
@@ -142,6 +155,8 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertIn("Pathways:", bundle["user_prompt"])
         self.assertIn("Overall priority", bundle["system_prompt"])
         self.assertIn("breadth, not strength", bundle["system_prompt"])
+        self.assertIn("Target-role interpretation:", bundle["user_prompt"])
+        self.assertIn("deterministic pathway annotations", bundle["user_prompt"])
 
     def test_evidence_support_count_uses_categories_not_percentiles(self) -> None:
         row = pd.Series(
