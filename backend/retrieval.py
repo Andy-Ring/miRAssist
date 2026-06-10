@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 from backend.config import (
+    get_db_candidate_limit,
     get_default_k,
     get_evidence_backend,
     get_evidence_table,
@@ -28,6 +29,71 @@ from backend.config import (
 
 _EVIDENCE_CACHE: Optional[pd.DataFrame] = None
 _EVIDENCE_SOURCE: Optional[str] = None
+_POSTGRES_COLUMN_CACHE: Dict[str, List[str]] = {}
+
+PRODUCTION_EVIDENCE_COLUMNS: Tuple[str, ...] = (
+    "mirna_name",
+    "gene_symbol",
+    "mirna_name_norm",
+    "gene_symbol_norm",
+    "transcript_id",
+    "learned_score_xgb_raw_v1",
+    "learned_score_xgb_raw_nomissing_v1",
+    "learned_score_model_version",
+    "learned_score_feature_set",
+    "learned_score_updated_at",
+    "retrieval_score",
+    "support_count",
+    "support_targetscan",
+    "support_mirdb",
+    "support_encori",
+    "support_rnahybrid",
+    "mirtarbase_pos",
+    "label_mirtarbase",
+    "mirdb_best_score",
+    "mirdb_mean_score",
+    "ts_best_contextpp",
+    "ts_best_percentile",
+    "ts_context_strength",
+    "clip_exp_sum",
+    "clip_exp_max",
+    "n_clip_sites",
+    "has_seed_features",
+    "best_seed_rank",
+    "best_seed_class",
+    "n_total_sites",
+    "n_sites_6mer",
+    "n_sites_7mer_a1",
+    "n_sites_7mer_m8",
+    "n_sites_8mer",
+    "site_density_per_kb",
+    "has_rnahybrid",
+    "n_rnahybrid_sites",
+    "best_mfe",
+    "mfe_strength",
+    "mean_top3_mfe",
+    "mean_top3_mfe_strength",
+    "n_sites_mfe_lt_-20",
+    "n_sites_mfe_lt_-25",
+    "best_local_au",
+    "best_local_au_by_mfe",
+    "BRCA_spearman_rho",
+    "COAD_spearman_rho",
+    "PRAD_spearman_rho",
+    "BRCA_support_tcga",
+    "COAD_support_tcga",
+    "PRAD_support_tcga",
+    "BRCA_anticorrelated",
+    "COAD_anticorrelated",
+    "PRAD_anticorrelated",
+    "BRCA_repression_evidence",
+    "COAD_repression_evidence",
+    "PRAD_repression_evidence",
+    "BRCA_pair_expressed",
+    "COAD_pair_expressed",
+    "PRAD_pair_expressed",
+    "gene_pathway_hits",
+)
 
 
 def _load_evidence_parquet(
@@ -112,6 +178,215 @@ def load_evidence(
     _EVIDENCE_CACHE = df
     _EVIDENCE_SOURCE = source
     return df
+
+
+def _split_table_name(table_name: str) -> Tuple[str, str]:
+    raw = str(table_name or "").strip()
+    if "." in raw:
+        schema_name, bare_name = raw.split(".", 1)
+        return schema_name.strip() or "public", bare_name.strip()
+    return "public", raw
+
+
+def _get_postgres_table_columns(table_name: str) -> List[str]:
+    from sqlalchemy import text
+
+    from backend.db import get_database_engine
+
+    engine = get_database_engine()
+    if engine is None:
+        raise RuntimeError("DATABASE_URL is not configured for postgres evidence loading.")
+
+    schema_name, bare_name = _split_table_name(table_name)
+    cache_key = f"{engine.url}|{schema_name}.{bare_name}"
+    if cache_key in _POSTGRES_COLUMN_CACHE:
+        return list(_POSTGRES_COLUMN_CACHE[cache_key])
+
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text(
+                """
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = :schema_name
+                  AND table_name = :table_name
+                ORDER BY ordinal_position
+                """
+            ),
+            {"schema_name": schema_name, "table_name": bare_name},
+        ).fetchall()
+
+    columns = [str(row[0]) for row in rows]
+    _POSTGRES_COLUMN_CACHE[cache_key] = columns
+    return list(columns)
+
+
+def _dynamic_tcga_columns(tcga: Optional[str]) -> List[str]:
+    if not tcga:
+        return []
+    tcga = str(tcga).upper()
+    return [
+        f"{tcga}_spearman_rho",
+        f"{tcga}_spearman_p",
+        f"{tcga}_support_tcga",
+        f"{tcga}_anticorrelated",
+        f"{tcga}_repression_evidence",
+        f"{tcga}_pair_expressed",
+    ]
+
+
+def _select_production_evidence_columns(available_columns: Iterable[str], tcga: Optional[str]) -> List[str]:
+    available = {str(col) for col in available_columns}
+    selected = [col for col in PRODUCTION_EVIDENCE_COLUMNS if col in available]
+    for col in _dynamic_tcga_columns(tcga):
+        if col in available and col not in selected:
+            selected.append(col)
+    return selected
+
+
+def _sql_in_clause(column_sql: str, param_prefix: str, values: List[str], params: Dict[str, Any]) -> str:
+    placeholders: List[str] = []
+    for idx, value in enumerate(values):
+        param_name = f"{param_prefix}_{idx}"
+        placeholders.append(f":{param_name}")
+        params[param_name] = value
+    if not placeholders:
+        return "1 = 0"
+    return f"{column_sql} IN ({', '.join(placeholders)})"
+
+
+def build_postgres_candidate_query(
+    query_token: str,
+    cfg: "RetrievalConfig",
+    available_columns: Iterable[str],
+) -> Tuple[str, Dict[str, Any], List[str], Dict[str, Any]]:
+    from backend.db import quote_identifier
+
+    direction = _direction_from_token(_normalize_token(query_token))
+    available = {str(col) for col in available_columns}
+    selected_columns = _select_production_evidence_columns(available, cfg.tcga)
+    required_columns = {"mirna_name", "gene_symbol", "support_count"}
+    if direction == "mirna_to_targets":
+        required_columns.add("mirna_name_norm")
+    else:
+        required_columns.add("gene_symbol_norm")
+    missing_required = sorted(col for col in required_columns if col not in selected_columns)
+    if missing_required:
+        raise RuntimeError(
+            "Postgres evidence retrieval requires columns missing from the evidence table: "
+            + ", ".join(missing_required)
+        )
+
+    params: Dict[str, Any] = {"candidate_limit": int(get_db_candidate_limit())}
+    where_clauses: List[str] = []
+
+    if cfg.novel and cfg.use_mirtarbase_evidence and "mirtarbase_pos" in available:
+        where_clauses.append("COALESCE(" + quote_identifier("mirtarbase_pos") + ", 0) = 0")
+
+    if cfg.min_support > 0 and "support_count" in available:
+        where_clauses.append("COALESCE(" + quote_identifier("support_count") + ", 0) >= :min_support")
+        params["min_support"] = int(cfg.min_support)
+
+    if cfg.require_binding_evidence:
+        binding_cols = [col for col in ("support_targetscan", "support_encori", "support_mirdb") if col in available]
+        if binding_cols:
+            binding_bits = [f"COALESCE({quote_identifier(col)}, 0) = 1" for col in binding_cols]
+            where_clauses.append("(" + " OR ".join(binding_bits) + ")")
+
+    if cfg.require_expression and cfg.tcga:
+        pair_expr_col = f"{str(cfg.tcga).upper()}_pair_expressed"
+        if pair_expr_col in available:
+            where_clauses.append("COALESCE(" + quote_identifier(pair_expr_col) + ", 0) = 1")
+
+    if direction == "mirna_to_targets":
+        mirna_base, mirna_arm = _normalize_mirna_query(query_token)
+        mirna_norms: List[str] = []
+        if mirna_base:
+            mirna_norms.append(mirna_base)
+            if mirna_arm in {"3p", "5p"}:
+                mirna_norms.append(f"{mirna_base}-{mirna_arm}")
+            else:
+                mirna_norms.extend([f"{mirna_base}-5p", f"{mirna_base}-3p"])
+        mirna_norms = [value for value in dict.fromkeys(mirna_norms) if value]
+        where_clauses.append(
+            _sql_in_clause(quote_identifier("mirna_name_norm"), "mirna_norm", mirna_norms, params)
+        )
+    else:
+        params["gene_norm"] = _normalize_gene_symbol(query_token)
+        where_clauses.append(f"{quote_identifier('gene_symbol_norm')} = :gene_norm")
+
+    pathway_selection = cfg.pathway_selection or {}
+    if bool(pathway_selection.get("enabled")) and cfg.pathway_gene_set and "gene_symbol_norm" in available:
+        pathway_genes = sorted({_normalize_gene_symbol(gene) for gene in cfg.pathway_gene_set if str(gene or "").strip()})
+        where_clauses.append(
+            _sql_in_clause(quote_identifier("gene_symbol_norm"), "pathway_gene", pathway_genes, params)
+        )
+
+    learned_score_column = get_learned_score_column()
+    order_columns: List[str] = []
+    if get_use_learned_score() and learned_score_column in available:
+        order_columns.append(f"{quote_identifier(learned_score_column)} DESC NULLS LAST")
+    for col in ("retrieval_score", "support_count", "mirdb_best_score", "ts_context_strength"):
+        if col in available:
+            order_columns.append(f"{quote_identifier(col)} DESC NULLS LAST")
+    if not order_columns:
+        order_columns.append(f"{quote_identifier('gene_symbol')} ASC")
+
+    quoted_table = quote_identifier(get_evidence_table())
+    select_sql = ", ".join(quote_identifier(col) for col in selected_columns)
+    where_sql = " AND ".join(where_clauses) if where_clauses else "1 = 1"
+    order_sql = ", ".join(order_columns)
+    query = (
+        f"SELECT {select_sql} "
+        f"FROM {quoted_table} "
+        f"WHERE {where_sql} "
+        f"ORDER BY {order_sql} "
+        f"LIMIT :candidate_limit"
+    )
+    diagnostics = {
+        "evidence_backend": "postgres",
+        "db_candidate_limit": int(get_db_candidate_limit()),
+        "learned_score_column": learned_score_column,
+        "query_direction": direction,
+        "sql_selected_columns": list(selected_columns),
+        "sql_order_columns": list(order_columns),
+    }
+    return query, params, selected_columns, diagnostics
+
+
+def _fetch_postgres_candidate_pool(
+    query_token: str,
+    cfg: "RetrievalConfig",
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    from sqlalchemy import text
+
+    from backend.db import get_database_engine
+
+    engine = get_database_engine()
+    if engine is None:
+        raise RuntimeError("DATABASE_URL is not configured for postgres evidence retrieval.")
+
+    table_name = get_evidence_table()
+    available_columns = _get_postgres_table_columns(table_name)
+    query, params, selected_columns, diagnostics = build_postgres_candidate_query(
+        query_token,
+        cfg,
+        available_columns,
+    )
+    try:
+        df = pd.read_sql_query(text(query), engine, params=params)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to fetch bounded postgres evidence candidates from '{table_name}'."
+        ) from exc
+
+    if df.columns.duplicated().any():
+        df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    diagnostics = dict(diagnostics)
+    diagnostics["n_rows_fetched_from_db"] = int(len(df))
+    diagnostics["sql_selected_column_count"] = int(len(selected_columns))
+    return df, diagnostics
 
 
 # =============================================================================
@@ -204,6 +479,7 @@ def apply_learned_score_ranking(
 
     ranked = ranked.assign(
         retrieval_rank_score=retrieval_score.astype(float),
+        learned_score_used=pd.Series(np.zeros(len(ranked), dtype=int), index=ranked.index),
         _retrieval_support_tiebreak=support_tiebreak.astype(float),
         _retrieval_mirdb_tiebreak=mirdb_tiebreak.astype(float),
         _retrieval_ts_tiebreak=ts_tiebreak.astype(float),
@@ -242,6 +518,7 @@ def apply_learned_score_ranking(
     learned_score_missing = learned_score_values.isna()
     ranked = ranked.assign(
         retrieval_rank_score=learned_score_values.where(~learned_score_missing, retrieval_score).astype(float),
+        learned_score_used=(~learned_score_missing).astype(int),
     )
     ranked = ranked.sort_values(
         [
@@ -963,7 +1240,7 @@ def retrieve_candidates(
 
 
 def retrieve_from_queryspec(
-    ev: pd.DataFrame,
+    ev: Optional[pd.DataFrame],
     queryspec: Dict[str, Any],
     pathway_selection: Optional[Dict[str, Any]] = None,
 ) -> Tuple[pd.DataFrame, str, Dict[str, Any]]:
@@ -1014,4 +1291,22 @@ def retrieve_from_queryspec(
         use_mirtarbase_evidence=use_mirtarbase_evidence(),
     )
 
-    return retrieve_candidates(ev, str(token), cfg)
+    fetch_diagnostics: Dict[str, Any] = {"evidence_backend": get_evidence_backend()}
+    if get_evidence_backend() == "postgres":
+        ev, fetch_diagnostics = _fetch_postgres_candidate_pool(str(token), cfg)
+    elif ev is None:
+        ev = load_evidence()
+
+    shortlist_df, direction, diagnostics = retrieve_candidates(ev, str(token), cfg)
+    diagnostics.update(
+        {
+            "evidence_backend": fetch_diagnostics.get("evidence_backend", diagnostics.get("evidence_backend")),
+            "db_candidate_limit": fetch_diagnostics.get("db_candidate_limit"),
+            "n_rows_fetched_from_db": fetch_diagnostics.get("n_rows_fetched_from_db"),
+            "sql_selected_column_count": fetch_diagnostics.get("sql_selected_column_count"),
+            "learned_score_column": fetch_diagnostics.get("learned_score_column", diagnostics.get("learned_score_column")),
+        }
+    )
+    if fetch_diagnostics.get("sql_order_columns"):
+        diagnostics["sql_order_columns"] = fetch_diagnostics["sql_order_columns"]
+    return shortlist_df, direction, diagnostics

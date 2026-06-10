@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
-
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import Engine
+from typing import Any, Optional, Tuple
 
 from backend.config import get_database_url
 
 
-_ENGINE_CACHE: dict[str, Engine] = {}
+_ENGINE_CACHE: dict[str, Any] = {}
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_\.]*$")
 
 
@@ -35,7 +32,9 @@ def _build_engine_kwargs(resolved_url: str) -> dict:
     return kwargs
 
 
-def get_database_engine(database_url: Optional[str] = None) -> Optional[Engine]:
+def get_database_engine(database_url: Optional[str] = None) -> Optional[Any]:
+    from sqlalchemy import create_engine
+
     resolved_url = normalize_database_url(database_url or get_database_url() or "")
     if not resolved_url:
         return None
@@ -46,6 +45,8 @@ def get_database_engine(database_url: Optional[str] = None) -> Optional[Engine]:
 
 
 def check_database_connectivity() -> Tuple[str, Optional[str]]:
+    from sqlalchemy import text
+
     engine = get_database_engine()
     if engine is None:
         return "not_configured", None

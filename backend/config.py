@@ -206,6 +206,14 @@ def get_default_result_count() -> int:
     return int(os.getenv("MIRASSIST_DEFAULT_RESULT_COUNT", "5"))
 
 
+def get_db_candidate_limit() -> int:
+    return int(os.getenv("MIRASSIST_DB_CANDIDATE_LIMIT", "1000"))
+
+
+def get_debug_max_rows() -> int:
+    return int(os.getenv("MIRASSIST_DEBUG_MAX_ROWS", "100"))
+
+
 def get_use_structure_in_score() -> bool:
     return _env_flag("MIRASSIST_USE_STRUCTURE_IN_SCORE", default="0")
 

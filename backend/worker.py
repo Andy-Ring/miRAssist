@@ -5,7 +5,20 @@ import json
 import traceback
 from typing import Any, Dict
 
-from backend.config import get_default_k
+from backend.config import get_debug_max_rows, get_default_k, get_evidence_backend
+
+
+SYNTHESIS_EVIDENCE_LIMIT = 25
+
+
+def _limit_debug_records(shortlist_df) -> list[dict]:
+    from backend.jobstore import sanitize_json_payload
+
+    if shortlist_df is None or len(shortlist_df) == 0:
+        return []
+    max_rows = max(1, int(get_debug_max_rows()))
+    limited_df = shortlist_df.head(max_rows).copy()
+    return sanitize_json_payload(limited_df.to_dict(orient="records"))
 
 
 def _apply_query_overrides(
@@ -126,20 +139,35 @@ def run_query_job(
             },
         )
 
-        ev = load_evidence()
+        evidence_backend = get_evidence_backend()
+        ev = None
+        if evidence_backend != "postgres":
+            ev = load_evidence()
+
         shortlist_df, direction, retrieval_diagnostics = retrieve_from_queryspec(
             ev,
             qs,
             pathway_selection=pathway_selection_internal,
         )
-        shortlist_df = annotate_feature_percentiles(shortlist_df, ev)
-        shortlist_records = shortlist_df.to_dict(orient="records")
+        retrieval_diagnostics["evidence_backend"] = evidence_backend
+        if evidence_backend == "postgres":
+            retrieval_diagnostics.setdefault("warnings", []).append(
+                "Feature percentile annotation was skipped in postgres production mode to avoid loading the full evidence table."
+            )
+        else:
+            shortlist_df = annotate_feature_percentiles(shortlist_df, ev)
+
+        shortlist_records = _limit_debug_records(shortlist_df)
+        synth_shortlist_df = shortlist_df.head(SYNTHESIS_EVIDENCE_LIMIT).copy()
+        retrieval_diagnostics["debug_max_rows"] = int(get_debug_max_rows())
+        retrieval_diagnostics["n_debug_rows_returned"] = int(len(shortlist_records))
+        retrieval_diagnostics["n_rows_sent_to_synthesizer"] = int(len(synth_shortlist_df))
         tcga = ((qs.get("cancer") or {}).get("tcga") or qs.get("tcga"))
-        cards, card_generation_diagnostics = cards_from_dataframe_with_diagnostics(shortlist_df, tcga=tcga)
+        cards, card_generation_diagnostics = cards_from_dataframe_with_diagnostics(synth_shortlist_df, tcga=tcga)
 
         bundle = build_prompt_bundle(
             queryspec=qs,
-            shortlist=shortlist_df,
+            shortlist=synth_shortlist_df,
             cards=cards,
             direction=direction,
             meta={
@@ -151,7 +179,24 @@ def run_query_job(
             retrieval_diagnostics=retrieval_diagnostics,
         )
 
-        if len(shortlist_df) > 0 and not cards:
+        print(
+            json.dumps(
+                {
+                    "query_id": query_id,
+                    "evidence_backend": evidence_backend,
+                    "db_candidate_limit": retrieval_diagnostics.get("db_candidate_limit"),
+                    "n_rows_fetched_from_db": retrieval_diagnostics.get("n_rows_fetched_from_db"),
+                    "n_after_filters": retrieval_diagnostics.get("n_after_pathway_filter"),
+                    "n_final_shortlist": retrieval_diagnostics.get("n_final_shortlist"),
+                    "n_rows_sent_to_synthesizer": retrieval_diagnostics.get("n_rows_sent_to_synthesizer"),
+                    "learned_score_used": retrieval_diagnostics.get("learned_score_enabled"),
+                    "learned_score_column": retrieval_diagnostics.get("learned_score_column"),
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        if len(synth_shortlist_df) > 0 and not cards:
             raise RuntimeError(
                 "Shortlist rows were produced, but card generation returned zero evidence cards. "
                 f"Diagnostics: {json.dumps(card_generation_diagnostics, ensure_ascii=False)}"
@@ -182,7 +227,6 @@ def run_query_job(
                 "retrieval_diagnostics": retrieval_diagnostics,
                 "card_generation_diagnostics": card_generation_diagnostics,
                 "shortlist": shortlist_records,
-                "bundle": bundle,
             },
         )
 
@@ -197,7 +241,6 @@ def run_query_job(
             "retrieval_diagnostics": retrieval_diagnostics,
             "card_generation_diagnostics": card_generation_diagnostics,
             "shortlist": shortlist_records,
-            "bundle": bundle,
             "answer": answer_obj,
         }
         write_job(query_id, final_payload)

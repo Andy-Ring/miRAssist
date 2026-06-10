@@ -150,6 +150,8 @@ Recommended environment variables:
 ```bash
 MIRASSIST_USE_LEARNED_SCORE=1
 MIRASSIST_LEARNED_SCORE_COLUMN=learned_score_xgb_raw_v1
+MIRASSIST_DB_CANDIDATE_LIMIT=1000
+MIRASSIST_DEBUG_MAX_ROWS=100
 ```
 
 Ranking behavior:
@@ -157,6 +159,7 @@ Ranking behavior:
 - If the configured learned-score column is present and non-null for a row, that value is used as the primary ranking score.
 - If the learned score is missing for a row, miRAssist falls back to the manual `retrieval_score` for that row.
 - If the configured learned-score column is absent entirely, miRAssist logs a warning and falls back to manual ranking without failing startup.
+- In `EVIDENCE_BACKEND=postgres` mode, miRAssist fetches only a bounded candidate pool from Supabase and does not load the full evidence parquet or any XGBoost model artifact at app runtime.
 
 ## Evidence interpretation and feature percentiles
 

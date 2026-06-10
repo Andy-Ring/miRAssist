@@ -5,8 +5,6 @@ import math
 from pathlib import Path
 from typing import Any, Dict
 
-from sqlalchemy import text
-
 from backend.config import get_jobstore_backend, resolve_job_dir
 from backend.db import get_database_engine
 
@@ -97,6 +95,8 @@ def _json_dumps_safe(payload: Any) -> str:
 
 
 def initialize_jobstore() -> None:
+    from sqlalchemy import text
+
     backend = get_jobstore_backend()
     if backend == "filesystem":
         resolve_job_dir().mkdir(parents=True, exist_ok=True)
@@ -169,6 +169,8 @@ def _write_job_filesystem(query_id: str, payload: Dict[str, Any]) -> None:
 
 
 def _read_job_postgres(query_id: str) -> Dict[str, Any]:
+    from sqlalchemy import text
+
     initialize_jobstore()
     engine = get_database_engine()
     if engine is None:
@@ -190,6 +192,8 @@ def _read_job_postgres(query_id: str) -> Dict[str, Any]:
 
 
 def _write_job_postgres(query_id: str, payload: Dict[str, Any]) -> None:
+    from sqlalchemy import text
+
     initialize_jobstore()
     engine = get_database_engine()
     if engine is None:

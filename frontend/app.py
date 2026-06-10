@@ -8,6 +8,7 @@ if str(REPO_ROOT) not in sys.path:
 import json
 import os
 import time
+import traceback
 import uuid
 
 import pandas as pd
@@ -17,6 +18,8 @@ import streamlit as st
 from backend.config import (
     database_configured,
     get_app_mode,
+    get_debug_max_rows,
+    get_debug_ui,
     get_evidence_backend,
     get_jobstore_backend,
     get_llm_backend,
@@ -545,6 +548,7 @@ def clear_session_outputs() -> None:
         "last_result",
         "last_query_id",
         "last_error",
+        "last_error_traceback",
         "last_status",
         "last_submit_response",
     ]:
@@ -760,12 +764,19 @@ if run:
         else:
             run_api_mode(st.session_state.get("api_url", ""), submit_payload)
     except Exception as e:
-        st.session_state["last_error"] = str(e)
+        st.session_state["last_error"] = "The query failed during retrieval or answer generation."
+        st.session_state["last_error_traceback"] = traceback.format_exc()
+        if get_debug_ui():
+            st.session_state["last_error"] = f"The query failed during retrieval or answer generation.\n\n{e}"
 
 
 err = st.session_state.get("last_error")
 if err:
     st.error(err)
+    error_traceback = st.session_state.get("last_error_traceback")
+    if error_traceback and get_debug_ui():
+        with st.expander("Traceback", expanded=False):
+            st.code(error_traceback)
 
 
 result = st.session_state.get("last_result")
@@ -814,12 +825,14 @@ if result:
         with st.expander("Evidence shortlist", expanded=False):
             shortlist = result.get("shortlist", [])
             if isinstance(shortlist, list) and len(shortlist) > 0:
-                df = pd.DataFrame(shortlist)
+                max_rows = max(1, int(get_debug_max_rows()))
+                df = pd.DataFrame(shortlist[:max_rows])
                 preferred_columns = [
                     "gene_symbol",
                     "mirna_name",
                     "learned_score_xgb_raw_v1",
                     "learned_score_xgb_raw_nomissing_v1",
+                    "learned_score_used",
                     "retrieval_rank_score",
                     "retrieval_score",
                     "learned_score_model_version",
@@ -833,6 +846,8 @@ if result:
                 ordered_columns = [col for col in preferred_columns if col in df.columns]
                 ordered_columns.extend([col for col in df.columns if col not in ordered_columns])
                 df = df.loc[:, ordered_columns]
+                if len(shortlist) > max_rows:
+                    st.caption(f"Showing the first {max_rows} debug rows.")
                 st.dataframe(df, use_container_width=True)
             else:
                 st.info("Shortlist is empty.")
