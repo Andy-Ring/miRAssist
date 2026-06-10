@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 
+from backend.config import use_mirtarbase_evidence
+
 EVIDENCE_CATEGORY_LABELS: Dict[str, str] = {
     "curated_validation": "miRTarBase",
     "mirdb_model": "miRDB",
@@ -237,6 +239,7 @@ def _compute_priority_fields(
 
 
 def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[str, Any]:
+    allow_mirtarbase = use_mirtarbase_evidence()
     target_evidence: List[str] = []
     published_model_evidence: List[str] = []
     clip_binding_evidence: List[str] = []
@@ -269,12 +272,14 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
         "pathway_membership": False,
     }
 
-    if _as_int(row.get("mirtarbase_pos"), 0) == 1 or _as_int(row.get("label_mirtarbase"), 0) == 1:
+    if allow_mirtarbase and (
+        _as_int(row.get("mirtarbase_pos"), 0) == 1 or _as_int(row.get("label_mirtarbase"), 0) == 1
+    ):
         curated_line = "miRTarBase functional interaction present"
         target_evidence.append(curated_line)
         primary_evidence_by_category["curated"] = curated_line
         evidence_categories["curated_validation"] = True
-    else:
+    elif allow_mirtarbase:
         caveats.append("No curated miRTarBase functional validation in this record")
 
     mirdb_score = _as_float(row.get("mirdb_best_score"))

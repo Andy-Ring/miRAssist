@@ -196,6 +196,33 @@ def get_default_result_count() -> int:
     return int(os.getenv("MIRASSIST_DEFAULT_RESULT_COUNT", "5"))
 
 
+def get_use_structure_in_score() -> bool:
+    return (os.getenv("MIRASSIST_USE_STRUCTURE_IN_SCORE", "0") or "0").strip() == "1"
+
+
+def get_use_learned_score() -> bool:
+    return (os.getenv("MIRASSIST_USE_LEARNED_SCORE", "1") or "1").strip() != "0"
+
+
+def get_learned_score_column() -> str:
+    return (os.getenv("MIRASSIST_LEARNED_SCORE_COLUMN", "learned_score_xgb_raw_v1") or "learned_score_xgb_raw_v1").strip()
+
+
+def get_eval_mode() -> bool:
+    return (os.getenv("MIRASSIST_EVAL_MODE", "0") or "0").strip() == "1"
+
+
+def get_disable_synthesis() -> bool:
+    return (os.getenv("MIRASSIST_DISABLE_SYNTHESIS", "0") or "0").strip() == "1"
+
+
+def use_mirtarbase_evidence() -> bool:
+    explicit = _first_nonempty(os.getenv("MIRASSIST_USE_MIRTARBASE_EVIDENCE"))
+    if explicit is not None:
+        return explicit.strip().lower() not in {"0", "false", "no", "off"}
+    return not get_eval_mode()
+
+
 def get_vllm_http_url() -> str | None:
     return _first_nonempty(os.getenv("MIRASSIST_VLLM_HTTP_URL"))
 

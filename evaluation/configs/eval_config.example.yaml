@@ -1,0 +1,15 @@
+run_name: blinded_eval
+evidence_input: /path/to/evidence_pairs_tcga.parquet
+blinded_evidence: evaluation/data/evidence_blinded_no_mirtarbase.parquet
+heldout_labels: evaluation/data/heldout_mirtarbase_labels.parquet
+manifest: evaluation/data/eval_queries.csv
+job_dir: evaluation/runs/blinded_eval/json
+k: 1000
+min_support: 1
+mode: mirna_to_targets
+eval_env:
+  MIRASSIST_EVAL_MODE: "1"
+  MIRASSIST_DISABLE_SYNTHESIS: "1"
+  EVIDENCE_BACKEND: parquet
+  JOBSTORE_BACKEND: filesystem
+  MIRASSIST_USE_MIRTARBASE_EVIDENCE: "0"

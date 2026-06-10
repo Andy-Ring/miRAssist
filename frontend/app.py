@@ -111,7 +111,7 @@ st.markdown(
 
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.7.8"
+APP_VERSION = "0.8.0"
 APP_AUTHOR = "Andy Ring"
 
 
@@ -815,6 +815,20 @@ if result:
             shortlist = result.get("shortlist", [])
             if isinstance(shortlist, list) and len(shortlist) > 0:
                 df = pd.DataFrame(shortlist)
+                preferred_columns = [
+                    "gene_symbol",
+                    "mirna_name",
+                    "learned_score_xgb_raw_v1",
+                    "retrieval_score",
+                    "support_count",
+                    "mirdb_best_score",
+                    "ts_context_strength",
+                    "clip_exp_sum",
+                    "best_mfe",
+                ]
+                ordered_columns = [col for col in preferred_columns if col in df.columns]
+                ordered_columns.extend([col for col in df.columns if col not in ordered_columns])
+                df = df.loc[:, ordered_columns]
                 st.dataframe(df, use_container_width=True)
             else:
                 st.info("Shortlist is empty.")

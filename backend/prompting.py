@@ -8,7 +8,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 import pandas as pd
 
-from backend.config import get_default_result_count
+from backend.config import get_default_result_count, use_mirtarbase_evidence
 
 
 SYSTEM_PROMPT = """You are miRAssist, a scientific assistant that helps prioritize miRNA-mRNA interactions for experimental follow-up.
@@ -86,6 +86,30 @@ Required output format:
 
 Keep language professional, direct, and readable.
 """
+
+
+def get_system_prompt() -> str:
+    prompt = SYSTEM_PROMPT
+    if use_mirtarbase_evidence():
+        return prompt
+
+    prompt = prompt.replace(
+        "- miRTarBase functional support is curated prior evidence, not automatic proof of the exact user context.\n",
+        "",
+    )
+    prompt = prompt.replace(
+        "- In novel mode, miRTarBase functional pairs must NOT appear in the ranked list.\n",
+        "",
+    )
+    prompt = prompt.replace(
+        "- Known interactions may be mentioned only as background context, not as novel candidates.\n",
+        "",
+    )
+    prompt = prompt.replace(
+        "- **Evidence categories:** miRTarBase; miRDB; TargetScan; CLIP; TCGA context; Pathway\n",
+        "- **Evidence categories:** miRDB; TargetScan; CLIP; TCGA context; Pathway\n",
+    )
+    return prompt
 
 
 def build_user_prompt(
@@ -343,7 +367,7 @@ def build_prompt_bundle(
     )
 
     bundle: Dict[str, Any] = {
-        "system_prompt": SYSTEM_PROMPT,
+        "system_prompt": get_system_prompt(),
         "user_prompt": user_prompt,
     }
 

@@ -125,6 +125,15 @@ EVIDENCE_TABLE=mirassist_evidence_pairs
 DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DBNAME
 ```
 
+If the evidence table has learned non-miRTarBase ranking columns populated, retrieval can prefer them with:
+
+```bash
+MIRASSIST_USE_LEARNED_SCORE=1
+MIRASSIST_LEARNED_SCORE_COLUMN=learned_score_xgb_raw_v1
+```
+
+Rows with missing learned scores automatically fall back to the manual `retrieval_score`.
+
 The Postgres evidence path is implemented as a direct table read, but the table still needs to contain the columns expected by the current retrieval logic. If the table is missing or unreadable, miRAssist now fails with a clear error mentioning `EVIDENCE_TABLE` and `DATABASE_URL`.
 
 ## Evidence interpretation and feature percentiles
