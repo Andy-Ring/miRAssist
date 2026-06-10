@@ -73,8 +73,6 @@ PRODUCTION_EVIDENCE_COLUMNS: Tuple[str, ...] = (
     "mfe_strength",
     "mean_top3_mfe",
     "mean_top3_mfe_strength",
-    "n_sites_mfe_lt_-20",
-    "n_sites_mfe_lt_-25",
     "best_local_au",
     "best_local_au_by_mfe",
     "BRCA_spearman_rho",
