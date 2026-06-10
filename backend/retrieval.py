@@ -178,6 +178,92 @@ def _safe_int_col(df: pd.DataFrame, col: str, default: int = 0) -> pd.Series:
     return pd.to_numeric(df[col], errors="coerce").fillna(default).astype(int)
 
 
+def apply_learned_score_ranking(
+    df: pd.DataFrame,
+    learned_score_column: str,
+    enabled: bool,
+) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    ranked = df.copy()
+    retrieval_score = _safe_float_col(ranked, "retrieval_score", default=0.0)
+    support_tiebreak = _safe_float_col(ranked, "support_count", default=0.0)
+    mirdb_tiebreak = _safe_float_col(ranked, "mirdb_best_score", default=0.0)
+    if "ts_context_strength" in ranked.columns:
+        ts_tiebreak = _safe_float_col(ranked, "ts_context_strength", default=0.0)
+    elif "retrieval_ts_contrib" in ranked.columns:
+        ts_tiebreak = _safe_float_col(ranked, "retrieval_ts_contrib", default=0.0)
+    else:
+        ts_tiebreak = np.clip(-_safe_float_col(ranked, "ts_best_contextpp", default=0.0), 0.0, 2.0)
+
+    diagnostics: Dict[str, Any] = {
+        "learned_score_enabled": False,
+        "retrieval_ranking_mode": "manual",
+        "learned_score_column": learned_score_column,
+        "learned_score_present_count": 0,
+        "learned_score_missing_count": int(len(ranked)),
+    }
+
+    ranked = ranked.assign(
+        retrieval_rank_score=retrieval_score.astype(float),
+        _retrieval_support_tiebreak=support_tiebreak.astype(float),
+        _retrieval_mirdb_tiebreak=mirdb_tiebreak.astype(float),
+        _retrieval_ts_tiebreak=ts_tiebreak.astype(float),
+    )
+
+    if not enabled:
+        ranked = ranked.sort_values(
+            [
+                "retrieval_rank_score",
+                "retrieval_score",
+                "_retrieval_support_tiebreak",
+                "_retrieval_mirdb_tiebreak",
+                "_retrieval_ts_tiebreak",
+            ],
+            ascending=[False, False, False, False, False],
+        )
+        return ranked, diagnostics
+
+    if learned_score_column not in ranked.columns:
+        diagnostics["warnings"] = [
+            f"Configured learned score column '{learned_score_column}' was not present in the evidence rows; using manual retrieval_score ranking."
+        ]
+        ranked = ranked.sort_values(
+            [
+                "retrieval_rank_score",
+                "retrieval_score",
+                "_retrieval_support_tiebreak",
+                "_retrieval_mirdb_tiebreak",
+                "_retrieval_ts_tiebreak",
+            ],
+            ascending=[False, False, False, False, False],
+        )
+        return ranked, diagnostics
+
+    learned_score_values = pd.to_numeric(ranked[learned_score_column], errors="coerce")
+    learned_score_missing = learned_score_values.isna()
+    ranked = ranked.assign(
+        retrieval_rank_score=learned_score_values.where(~learned_score_missing, retrieval_score).astype(float),
+    )
+    ranked = ranked.sort_values(
+        [
+            "retrieval_rank_score",
+            "retrieval_score",
+            "_retrieval_support_tiebreak",
+            "_retrieval_mirdb_tiebreak",
+            "_retrieval_ts_tiebreak",
+        ],
+        ascending=[False, False, False, False, False],
+    )
+    diagnostics.update(
+        {
+            "learned_score_enabled": True,
+            "retrieval_ranking_mode": f"learned:{learned_score_column}",
+            "learned_score_present_count": int((~learned_score_missing).sum()),
+            "learned_score_missing_count": int(learned_score_missing.sum()),
+        }
+    )
+    return ranked, diagnostics
+
+
 # =============================================================================
 # miRNA normalization + matching (robust exact matching via normalization)
 # =============================================================================
@@ -849,50 +935,23 @@ def retrieve_candidates(
         pathway_selected_names=components["pathway_selected_names"],
     )
 
-    learned_score_column = get_learned_score_column()
-    learned_score_enabled = bool(get_use_learned_score() and learned_score_column in df.columns)
-    if learned_score_enabled:
-        learned_score_values = pd.to_numeric(df[learned_score_column], errors="coerce")
-        learned_score_missing = learned_score_values.isna().astype(int)
-        learned_score_rank = learned_score_values.where(~learned_score_values.isna(), df["retrieval_score"])
-        mirdb_tiebreak = _safe_float_col(df, "mirdb_best_score", default=0.0)
-        ts_tiebreak = df["retrieval_ts_contrib"] if "retrieval_ts_contrib" in df.columns else np.clip(
-            -_safe_float_col(df, "ts_best_contextpp", default=0.0),
-            0.0,
-            2.0,
-        )
-        df = df.assign(
-            _learned_score_rank=learned_score_rank.astype(float),
-            _learned_score_missing=learned_score_missing.astype(int),
-            _learned_score_tiebreak_mirdb=mirdb_tiebreak.astype(float),
-            _learned_score_tiebreak_ts=ts_tiebreak.astype(float),
-        )
-        df = df.sort_values(
-            [
-                "_learned_score_missing",
-                "_learned_score_rank",
-                "retrieval_score",
-                "support_count",
-                "_learned_score_tiebreak_mirdb",
-                "_learned_score_tiebreak_ts",
-            ],
-            ascending=[True, False, False, False, False, False],
-        )
-        diagnostics["retrieval_ranking_mode"] = f"learned:{learned_score_column}"
-        diagnostics["learned_score_enabled"] = True
-    else:
-        df = df.sort_values("retrieval_score", ascending=False)
-        diagnostics["learned_score_enabled"] = False
+    df, ranking_info = apply_learned_score_ranking(
+        df,
+        learned_score_column=get_learned_score_column(),
+        enabled=bool(get_use_learned_score()),
+    )
+    diagnostics.update({k: v for k, v in ranking_info.items() if k != "warnings"})
+    for warning in ranking_info.get("warnings", []):
+        diagnostics["warnings"].append(warning)
 
     df = df.head(int(cfg.k_shortlist)).reset_index(drop=True)
     df = df.drop(
         columns=[
             col
             for col in [
-                "_learned_score_rank",
-                "_learned_score_missing",
-                "_learned_score_tiebreak_mirdb",
-                "_learned_score_tiebreak_ts",
+                "_retrieval_support_tiebreak",
+                "_retrieval_mirdb_tiebreak",
+                "_retrieval_ts_tiebreak",
             ]
             if col in df.columns
         ],

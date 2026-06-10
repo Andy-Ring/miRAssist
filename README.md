@@ -136,6 +136,28 @@ Rows with missing learned scores automatically fall back to the manual `retrieva
 
 The Postgres evidence path is implemented as a direct table read, but the table still needs to contain the columns expected by the current retrieval logic. If the table is missing or unreadable, miRAssist now fails with a clear error mentioning `EVIDENCE_TABLE` and `DATABASE_URL`.
 
+## Using learned XGBoost ranking in production
+
+If `mirassist_evidence_pairs` includes precomputed learned-score columns, production retrieval can rank with the learned score while keeping the manual `retrieval_score` for fallback and debugging.
+
+Required Supabase columns:
+
+- `learned_score_xgb_raw_v1` or another configured learned-score column
+- Optional metadata columns such as `learned_score_xgb_raw_nomissing_v1`, `learned_score_model_version`, `learned_score_feature_set`, and `learned_score_updated_at`
+
+Recommended environment variables:
+
+```bash
+MIRASSIST_USE_LEARNED_SCORE=1
+MIRASSIST_LEARNED_SCORE_COLUMN=learned_score_xgb_raw_v1
+```
+
+Ranking behavior:
+
+- If the configured learned-score column is present and non-null for a row, that value is used as the primary ranking score.
+- If the learned score is missing for a row, miRAssist falls back to the manual `retrieval_score` for that row.
+- If the configured learned-score column is absent entirely, miRAssist logs a warning and falls back to manual ranking without failing startup.
+
 ## Evidence interpretation and feature percentiles
 
 miRAssist now computes evidence feature percentiles across the full evidence table before synthesis. These annotations are added to the retrieved shortlist and stored in the job payload, so the LLM receives backend-computed evidence labels instead of inventing them.

@@ -275,6 +275,8 @@ set MIRASSIST_USE_LEARNED_SCORE=1
 set MIRASSIST_LEARNED_SCORE_COLUMN=learned_score_xgb_raw_v1
 ```
 
+In production retrieval, miRAssist will prefer the configured learned-score column when it is present, fall back row-by-row to the manual `retrieval_score` when the learned score is null, and fall back globally to manual ranking with a warning if the configured learned-score column is absent.
+
 ## Smoke checks
 
 ```bash

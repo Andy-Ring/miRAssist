@@ -27,6 +27,16 @@ def _first_nonempty(*values: str | None) -> str | None:
     return None
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    value = _first_nonempty(os.getenv(name), default) or default
+    normalized = str(value).strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return bool(normalized)
+
+
 def _load_local_dotenv() -> None:
     dotenv_path = ROOT_DIR / ".env"
     if not dotenv_path.exists():
@@ -197,11 +207,11 @@ def get_default_result_count() -> int:
 
 
 def get_use_structure_in_score() -> bool:
-    return (os.getenv("MIRASSIST_USE_STRUCTURE_IN_SCORE", "0") or "0").strip() == "1"
+    return _env_flag("MIRASSIST_USE_STRUCTURE_IN_SCORE", default="0")
 
 
 def get_use_learned_score() -> bool:
-    return (os.getenv("MIRASSIST_USE_LEARNED_SCORE", "1") or "1").strip() != "0"
+    return _env_flag("MIRASSIST_USE_LEARNED_SCORE", default="1")
 
 
 def get_learned_score_column() -> str:
