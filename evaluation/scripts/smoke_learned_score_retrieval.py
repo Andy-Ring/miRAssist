@@ -14,7 +14,12 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.config import get_debug_max_rows, get_learned_score_column, get_use_learned_score
 from backend.jobstore import sanitize_json_payload
-from backend.retrieval import RetrievalConfig, apply_learned_score_ranking, build_postgres_candidate_query
+from backend.retrieval import (
+    RetrievalConfig,
+    apply_learned_score_ranking,
+    build_postgres_candidate_query,
+    expand_mirna_query_variants,
+)
 from backend.worker import _limit_debug_records
 
 
@@ -194,6 +199,7 @@ def _assert_postgres_query_builder() -> None:
         "miR-210",
         cfg,
         available_columns,
+        mirna_variants=expand_mirna_query_variants("miR-210"),
     )
     assert "LIMIT :candidate_limit" in query
     assert '"mirna_name_norm" IN (' in query

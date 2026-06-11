@@ -180,6 +180,10 @@ def build_user_prompt(
         ctx_lines.append("- Mode: NOVEL (exclude miRTarBase functional interactions from ranked list)")
     if needs_clarification:
         ctx_lines.append(f"- Ambiguities noted by planner: {', '.join(needs_clarification)}")
+    if retrieval_diagnostics.get("user_notes"):
+        ctx_lines.append(
+            "- Retrieval notes: " + "; ".join([str(item) for item in (retrieval_diagnostics.get("user_notes") or []) if str(item).strip()])
+        )
 
     available_n = len(cards)
     top_n = int(requested_results or available_n)

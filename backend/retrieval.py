@@ -257,6 +257,9 @@ def build_postgres_candidate_query(
     query_token: str,
     cfg: "RetrievalConfig",
     available_columns: Iterable[str],
+    *,
+    mirna_variants: Optional[List[str]] = None,
+    mirna_prefix_patterns: Optional[List[str]] = None,
 ) -> Tuple[str, Dict[str, Any], List[str], Dict[str, Any]]:
     from backend.db import quote_identifier
 
@@ -281,10 +284,6 @@ def build_postgres_candidate_query(
     if cfg.novel and cfg.use_mirtarbase_evidence and "mirtarbase_pos" in available:
         where_clauses.append("COALESCE(" + quote_identifier("mirtarbase_pos") + ", 0) = 0")
 
-    if cfg.min_support > 0 and "support_count" in available:
-        where_clauses.append("COALESCE(" + quote_identifier("support_count") + ", 0) >= :min_support")
-        params["min_support"] = int(cfg.min_support)
-
     if cfg.require_binding_evidence:
         binding_cols = [col for col in ("support_targetscan", "support_encori", "support_mirdb") if col in available]
         if binding_cols:
@@ -297,18 +296,17 @@ def build_postgres_candidate_query(
             where_clauses.append("COALESCE(" + quote_identifier(pair_expr_col) + ", 0) = 1")
 
     if direction == "mirna_to_targets":
-        mirna_base, mirna_arm = _normalize_mirna_query(query_token)
-        mirna_norms: List[str] = []
-        if mirna_base:
-            mirna_norms.append(mirna_base)
-            if mirna_arm in {"3p", "5p"}:
-                mirna_norms.append(f"{mirna_base}-{mirna_arm}")
-            else:
-                mirna_norms.extend([f"{mirna_base}-5p", f"{mirna_base}-3p"])
-        mirna_norms = [value for value in dict.fromkeys(mirna_norms) if value]
-        where_clauses.append(
-            _sql_in_clause(quote_identifier("mirna_name_norm"), "mirna_norm", mirna_norms, params)
-        )
+        mirna_bits: List[str] = []
+        if mirna_variants:
+            mirna_bits.append(
+                _sql_in_clause(quote_identifier("mirna_name_norm"), "mirna_norm", mirna_variants, params)
+            )
+        if mirna_prefix_patterns:
+            for idx, pattern in enumerate(mirna_prefix_patterns):
+                param_name = f"mirna_prefix_{idx}"
+                params[param_name] = pattern
+                mirna_bits.append(f"{quote_identifier('mirna_name_norm')} LIKE :{param_name}")
+        where_clauses.append("(" + " OR ".join(mirna_bits) + ")" if mirna_bits else "1 = 0")
     else:
         params["gene_norm"] = _normalize_gene_symbol(query_token)
         where_clauses.append(f"{quote_identifier('gene_symbol_norm')} = :gene_norm")
@@ -348,6 +346,8 @@ def build_postgres_candidate_query(
         "query_direction": direction,
         "sql_selected_columns": list(selected_columns),
         "sql_order_columns": list(order_columns),
+        "exact_mirna_variants_used": list(mirna_variants or []),
+        "mirna_prefix_patterns_used": list(mirna_prefix_patterns or []),
     }
     return query, params, selected_columns, diagnostics
 
@@ -366,22 +366,61 @@ def _fetch_postgres_candidate_pool(
 
     table_name = get_evidence_table()
     available_columns = _get_postgres_table_columns(table_name)
-    query, params, selected_columns, diagnostics = build_postgres_candidate_query(
-        query_token,
-        cfg,
-        available_columns,
-    )
-    try:
-        df = pd.read_sql_query(text(query), engine, params=params)
-    except Exception as exc:
-        raise RuntimeError(
-            f"Failed to fetch bounded postgres evidence candidates from '{table_name}'."
-        ) from exc
+    direction = _direction_from_token(_normalize_token(query_token))
+    exact_variants = _exact_mirna_query_variants(query_token) if direction == "mirna_to_targets" else []
+    expanded_variants = expand_mirna_query_variants(query_token) if direction == "mirna_to_targets" else []
+    prefix_patterns = _mirna_prefix_fallback_patterns(query_token) if direction == "mirna_to_targets" else []
+
+    diagnostics: Dict[str, Any] = {
+        "evidence_backend": "postgres",
+        "exact_mirna_variants_used": list(exact_variants),
+        "searched_mirna_variants": list(exact_variants),
+        "mature_arm_expansion_attempted": bool(direction == "mirna_to_targets" and len(expanded_variants) > len(exact_variants)),
+        "mirna_prefix_fallback_attempted": False,
+    }
+
+    def _run_query(mirna_variants: Optional[List[str]], mirna_like_patterns: Optional[List[str]]) -> Tuple[pd.DataFrame, Dict[str, Any], List[str]]:
+        query, params, selected_cols, diag = build_postgres_candidate_query(
+            query_token,
+            cfg,
+            available_columns,
+            mirna_variants=mirna_variants,
+            mirna_prefix_patterns=mirna_like_patterns,
+        )
+        try:
+            frame = pd.read_sql_query(text(query), engine, params=params)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Failed to fetch bounded postgres evidence candidates from '{table_name}'."
+            ) from exc
+        return frame, diag, selected_cols
+
+    if direction == "mirna_to_targets":
+        df, query_diagnostics, selected_columns = _run_query(exact_variants, None)
+        diagnostics.update(query_diagnostics)
+        diagnostics["exact_mirna_variants_used"] = list(exact_variants)
+        diagnostics["searched_mirna_variants"] = list(exact_variants)
+        if df.empty and expanded_variants and expanded_variants != exact_variants:
+            df, query_diagnostics, selected_columns = _run_query(expanded_variants, None)
+            diagnostics.update(query_diagnostics)
+            diagnostics["mature_arm_expansion_used"] = True
+            diagnostics["searched_mirna_variants"] = list(expanded_variants)
+        else:
+            diagnostics["mature_arm_expansion_used"] = False
+        if df.empty and prefix_patterns:
+            diagnostics["mirna_prefix_fallback_attempted"] = True
+            df, query_diagnostics, selected_columns = _run_query(None, prefix_patterns)
+            diagnostics.update(query_diagnostics)
+            diagnostics["mirna_prefix_fallback_used"] = not df.empty
+        else:
+            diagnostics["mirna_prefix_fallback_used"] = False
+    else:
+        df, query_diagnostics, selected_columns = _run_query(None, None)
+        diagnostics.update(query_diagnostics)
 
     if df.columns.duplicated().any():
         df = df.loc[:, ~df.columns.duplicated()].copy()
 
-    diagnostics = dict(diagnostics)
     diagnostics["n_rows_fetched_from_db"] = int(len(df))
     diagnostics["sql_selected_column_count"] = int(len(selected_columns))
     return df, diagnostics
@@ -417,6 +456,8 @@ class RetrievalConfig:
     # Collapse duplicate (miRNA,gene) rows before scoring
     collapse_duplicates: bool = True
     use_mirtarbase_evidence: bool = True
+    allow_min_support_relaxation: bool = False
+    user_requested_strict_support: bool = False
 
 
 # =============================================================================
@@ -593,6 +634,66 @@ def _normalize_mirna_query(user_mirna: str) -> Tuple[str, Optional[str]]:
     return s, arm
 
 
+def _species_prefix_from_raw_mirna(value: str) -> Optional[str]:
+    s = str(value or "").strip().replace("_", "-")
+    m = _SPECIES_PREFIX_RE.match(s)
+    if not m:
+        return None
+    return m.group(1).lower()
+
+
+def _dedupe_preserve_order(values: Iterable[str]) -> List[str]:
+    seen: set[str] = set()
+    out: List[str] = []
+    for value in values:
+        text = str(value or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def expand_mirna_query_variants(raw_mirna: str) -> List[str]:
+    base, arm = _normalize_mirna_query(raw_mirna)
+    if not base:
+        return []
+
+    species_prefix = _species_prefix_from_raw_mirna(raw_mirna)
+    species_prefixes = _dedupe_preserve_order([species_prefix, "hsa"])
+
+    if arm in {"3p", "5p"}:
+        canonical_forms = [f"{base}-{arm}"]
+    else:
+        canonical_forms = [base, f"{base}-3p", f"{base}-5p"]
+
+    prefixed_forms = [f"{prefix}-{form}" for prefix in species_prefixes for form in canonical_forms]
+    return _dedupe_preserve_order(canonical_forms + prefixed_forms)
+
+
+def _exact_mirna_query_variants(raw_mirna: str) -> List[str]:
+    base, arm = _normalize_mirna_query(raw_mirna)
+    if not base:
+        return []
+
+    species_prefix = _species_prefix_from_raw_mirna(raw_mirna)
+    species_prefixes = _dedupe_preserve_order([species_prefix, "hsa"])
+    canonical = f"{base}-{arm}" if arm in {"3p", "5p"} else base
+    prefixed = [f"{prefix}-{canonical}" for prefix in species_prefixes]
+    return _dedupe_preserve_order([canonical] + prefixed)
+
+
+def _mirna_prefix_fallback_patterns(raw_mirna: str) -> List[str]:
+    base, arm = _normalize_mirna_query(raw_mirna)
+    if not base or arm in {"3p", "5p"}:
+        return []
+
+    species_prefix = _species_prefix_from_raw_mirna(raw_mirna)
+    species_prefixes = _dedupe_preserve_order([species_prefix, "hsa"])
+    prefixed = [f"{prefix}-{base}-%" for prefix in species_prefixes]
+    return _dedupe_preserve_order([f"{base}-%"] + prefixed)
+
+
 def _normalize_mirna_table_value(v: str) -> Tuple[str, Optional[str]]:
     """
     Normalize a table miRNA string into (base, arm) similar to query normalization.
@@ -668,6 +769,114 @@ def resolve_mirna_names_for_table(user_mirna: str, mirna_series: pd.Series) -> L
     for arm_try in ("5p", None, "3p"):
         combined.extend(hits_for(q_base, arm_try))
     return sorted(set(combined))
+
+
+def _filter_mirna_rows(df: pd.DataFrame, raw_mirna: str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    diagnostics: Dict[str, Any] = {
+        "query_mirna_normalized": _normalize_mirna_query(raw_mirna)[0],
+        "exact_mirna_variants_used": _exact_mirna_query_variants(raw_mirna),
+        "searched_mirna_variants": _exact_mirna_query_variants(raw_mirna),
+        "mature_arm_expansion_attempted": False,
+        "mature_arm_expansion_used": False,
+        "mirna_prefix_fallback_attempted": False,
+        "mirna_prefix_fallback_used": False,
+    }
+    if df.empty:
+        return df, diagnostics
+
+    exact_variants = diagnostics["exact_mirna_variants_used"]
+    expanded_variants = expand_mirna_query_variants(raw_mirna)
+    prefix_patterns = _mirna_prefix_fallback_patterns(raw_mirna)
+
+    if "mirna_name_norm" in df.columns:
+        norm_series = df["mirna_name_norm"].astype(str).str.strip().str.lower()
+        exact_mask = norm_series.isin([value.lower() for value in exact_variants])
+        filtered = df.loc[exact_mask].copy()
+
+        if filtered.empty and expanded_variants and expanded_variants != exact_variants:
+            diagnostics["mature_arm_expansion_attempted"] = True
+            expanded_mask = norm_series.isin([value.lower() for value in expanded_variants])
+            filtered = df.loc[expanded_mask].copy()
+            diagnostics["mature_arm_expansion_used"] = not filtered.empty
+            diagnostics["searched_mirna_variants"] = list(expanded_variants)
+
+        if filtered.empty and prefix_patterns:
+            diagnostics["mirna_prefix_fallback_attempted"] = True
+            prefix_mask = pd.Series(False, index=df.index)
+            for pattern in prefix_patterns:
+                prefix_mask |= norm_series.str.startswith(pattern[:-1])
+            filtered = df.loc[prefix_mask].copy()
+            diagnostics["mirna_prefix_fallback_used"] = not filtered.empty
+
+        matched = filtered["mirna_name"].dropna().astype(str).unique().tolist() if "mirna_name" in filtered.columns else []
+        diagnostics["matched_mirna_names"] = matched[:20]
+        return filtered, diagnostics
+
+    allowed = resolve_mirna_names_for_table(raw_mirna, df["mirna_name"])
+    diagnostics["matched_mirna_names"] = allowed[:20]
+    if not allowed:
+        return df.head(0).copy(), diagnostics
+    allowed_l = {a.lower() for a in allowed}
+    filtered = df[df["mirna_name"].astype(str).str.lower().isin(allowed_l)].copy()
+    return filtered, diagnostics
+
+
+def _apply_min_support_with_relaxation(
+    df: pd.DataFrame,
+    cfg: "RetrievalConfig",
+    diagnostics: Dict[str, Any],
+) -> pd.DataFrame:
+    initial_min_support = int(cfg.min_support)
+    diagnostics["initial_min_support"] = initial_min_support
+    diagnostics["effective_min_support"] = initial_min_support
+    diagnostics["relaxed_min_support_reason"] = None
+    diagnostics["n_rows_before_min_support"] = int(len(df))
+
+    if df.empty:
+        diagnostics["n_rows_after_min_support"] = 0
+        return df
+
+    support_count = _safe_int_col(df, "support_count", default=0)
+
+    def _filter_for(threshold: int) -> pd.DataFrame:
+        if threshold <= 0:
+            return df.copy()
+        return df.loc[support_count >= threshold].copy()
+
+    filtered = _filter_for(initial_min_support)
+    diagnostics["n_rows_after_min_support"] = int(len(filtered))
+    diagnostics["n_after_min_support"] = int(len(filtered))
+    if not filtered.empty or not cfg.allow_min_support_relaxation or cfg.user_requested_strict_support:
+        return filtered
+
+    if initial_min_support >= 2:
+        relaxed_one = _filter_for(1)
+        if not relaxed_one.empty:
+            diagnostics["effective_min_support"] = 1
+            diagnostics["relaxed_min_support_reason"] = (
+                "No candidates passed the initial min_support filter for a broad miRNA query, so the threshold was relaxed to 1 while keeping learned-score ranking enabled."
+            )
+            diagnostics["n_rows_after_min_support"] = int(len(relaxed_one))
+            diagnostics["n_after_min_support"] = int(len(relaxed_one))
+            diagnostics.setdefault("warnings", []).append(
+                f"No candidates passed min_support >= {initial_min_support}; retrieval was relaxed to min_support >= 1 for a broad miRNA query."
+            )
+            return relaxed_one
+
+        relaxed_zero = _filter_for(0)
+        if not relaxed_zero.empty:
+            diagnostics["effective_min_support"] = 0
+            diagnostics["relaxed_min_support_reason"] = (
+                "No candidates passed min_support >= 2 or >= 1, so retrieval fell back to min_support 0 and ranked candidates by learned score."
+            )
+            diagnostics["n_rows_after_min_support"] = int(len(relaxed_zero))
+            diagnostics["n_after_min_support"] = int(len(relaxed_zero))
+            diagnostics.setdefault("warnings", []).append(
+                f"No candidates passed min_support >= {initial_min_support}; retrieval was relaxed to min_support >= 0 and ranked by learned score."
+            )
+            return relaxed_zero
+
+    return filtered
 
 
 # =============================================================================
@@ -1041,8 +1250,13 @@ def retrieve_candidates(
         "query_gene_normalized": _normalize_gene_symbol(query_token) if direction == "gene_to_mirnas" else None,
         "n_evidence_rows_total": int(len(ev)),
         "n_after_novel_filter": int(len(ev)),
-        "n_after_min_support": int(len(ev)),
+        "n_after_min_support": 0,
         "matched_mirna_names": [],
+        "exact_mirna_variants_used": [],
+        "mature_arm_expansion_attempted": False,
+        "mature_arm_expansion_used": False,
+        "mirna_prefix_fallback_attempted": False,
+        "mirna_prefix_fallback_used": False,
         "n_after_query_filter": 0,
         "pathway_filter_enabled": bool((cfg.pathway_selection or {}).get("enabled")),
         "n_selected_pathway_genes": 0,
@@ -1059,57 +1273,31 @@ def retrieve_candidates(
         "retrieval_structure_in_score": bool(get_use_structure_in_score()),
         "retrieval_ranking_mode": "manual",
         "learned_score_column": get_learned_score_column(),
+        "initial_min_support": int(cfg.min_support),
+        "effective_min_support": int(cfg.min_support),
+        "relaxed_min_support_reason": None,
+        "n_rows_before_min_support": 0,
+        "n_rows_after_min_support": 0,
         "warnings": [],
     }
     if direction == "mirna_to_targets":
         diagnostics["query_mirna_normalized"] = _normalize_mirna_query(query_token)[0]
 
     _ensure_cols(ev, ["mirna_name", "gene_symbol", "support_count"])
-    df = ev
+    df = ev.copy()
 
-    # Build a single mask aligned to df.index
-    mask = pd.Series(True, index=df.index)
-
-    # --- Novel mode (only hard exclude by design) ---
-    if cfg.novel and cfg.use_mirtarbase_evidence and "mirtarbase_pos" in df.columns:
-        mask &= (_bool_col(df, "mirtarbase_pos") == 0)
-    diagnostics["n_after_novel_filter"] = int(mask.sum())
-
-    # --- Minimal pre-filter ---
-    if cfg.min_support > 0:
-        sc = _safe_int_col(df, "support_count", default=0)
-        mask &= (sc >= int(cfg.min_support))
-    diagnostics["n_after_min_support"] = int(mask.sum())
-
-    # --- Optional soft gates ---
-    if cfg.require_binding_evidence:
-        mask &= (
-            (_bool_col(df, "support_targetscan") == 1)
-            | (_bool_col(df, "support_encori") == 1)
-            | (_bool_col(df, "support_mirdb") == 1)
-        )
-
-    if cfg.require_expression and cfg.tcga:
-        pair_expr = f"{str(cfg.tcga).upper()}_pair_expressed"
-        if pair_expr in df.columns:
-            mask &= (_bool_col(df, pair_expr) == 1)
-
-    df = df.loc[mask].copy()
-    if df.empty:
-        diagnostics["warnings"].append("No evidence rows remained after novelty/support/expression filters.")
-        return df.head(0), direction, diagnostics
-
-    # --- Restrict by direction ---
     matched_tokens: List[str] = []
     if direction == "mirna_to_targets":
-        allowed = resolve_mirna_names_for_table(query_token, df["mirna_name"])
-        matched_tokens = allowed
-        diagnostics["matched_mirna_names"] = allowed[:20]
-        if not allowed:
-            diagnostics["warnings"].append("No miRNA names in the evidence table matched the query after normalization.")
+        df, mirna_match_diagnostics = _filter_mirna_rows(df, query_token)
+        diagnostics.update(mirna_match_diagnostics)
+        matched_tokens = list(diagnostics.get("matched_mirna_names") or [])
+        if df.empty:
+            attempted = diagnostics.get("exact_mirna_variants_used") or [diagnostics.get("query_mirna_normalized")]
+            diagnostics["warnings"].append(
+                "No miRNA names in the evidence table matched the query after normalization. "
+                f"Searched normalized forms: {', '.join([str(v) for v in attempted if v])}."
+            )
             return df.head(0), direction, diagnostics
-        allowed_l = {a.lower() for a in allowed}
-        df = df[df["mirna_name"].astype(str).str.lower().isin(allowed_l)].copy()
     else:
         gene_norm = _normalize_gene_symbol(query_token)
         df = df[df["gene_symbol"].astype(str).map(_normalize_gene_symbol) == gene_norm].copy()
@@ -1123,6 +1311,43 @@ def retrieve_candidates(
             diagnostics["warnings"].append("The gene query matched no rows after table filtering.")
         return df.head(0), direction, diagnostics
 
+    # --- Novel mode and optional soft gates after query narrowing ---
+    if cfg.novel and cfg.use_mirtarbase_evidence and "mirtarbase_pos" in df.columns:
+        df = df.loc[_bool_col(df, "mirtarbase_pos") == 0].copy()
+    diagnostics["n_after_novel_filter"] = int(len(df))
+
+    if cfg.require_binding_evidence:
+        binding_mask = (
+            (_bool_col(df, "support_targetscan") == 1)
+            | (_bool_col(df, "support_encori") == 1)
+            | (_bool_col(df, "support_mirdb") == 1)
+        )
+        df = df.loc[binding_mask].copy()
+
+    if cfg.require_expression and cfg.tcga:
+        pair_expr = f"{str(cfg.tcga).upper()}_pair_expressed"
+        if pair_expr in df.columns:
+            df = df.loc[_bool_col(df, pair_expr) == 1].copy()
+
+    if df.empty:
+        diagnostics["warnings"].append("No evidence rows remained after novelty/binding/expression filters.")
+        return df.head(0), direction, diagnostics
+
+    df = _apply_min_support_with_relaxation(df, cfg, diagnostics)
+    if df.empty:
+        searched_form = diagnostics.get("query_mirna_normalized") if direction == "mirna_to_targets" else diagnostics.get("query_gene_normalized")
+        matched_names = diagnostics.get("matched_mirna_names") or []
+        detail = ""
+        if matched_names:
+            detail = " Matching rows were found for " + "/".join([str(name) for name in matched_names[:4]]) + ", but relaxed filtering may be needed."
+        explanation = (
+            f"No candidates passed min_support >= {diagnostics.get('initial_min_support', cfg.min_support)} for {searched_form or query_token}. "
+            f"Rows found before min_support: {diagnostics.get('n_rows_before_min_support', 0)}.{detail}"
+        )
+        diagnostics["no_candidates_explanation"] = explanation
+        diagnostics["warnings"].append(explanation)
+        return df.head(0), direction, diagnostics
+
     # --- Collapse duplicates so each (miRNA,gene) appears once ---
     if cfg.collapse_duplicates:
         df = _collapse_pair_rows(df)
@@ -1130,6 +1355,19 @@ def retrieve_candidates(
             diagnostics["warnings"].append("Rows were found, but none remained after duplicate collapse.")
             return df.head(0), direction, diagnostics
     diagnostics["n_after_collapse_duplicates"] = int(len(df))
+
+    if direction == "mirna_to_targets":
+        matched_arms = sorted(
+            {
+                arm
+                for _, arm in (_normalize_mirna_table_value(value) for value in df["mirna_name"].dropna().astype(str).unique().tolist())
+                if arm in {"3p", "5p"}
+            }
+        )
+        if len(matched_arms) >= 2 and diagnostics.get("query_mirna_normalized"):
+            diagnostics.setdefault("user_notes", []).append(
+                f"{diagnostics['query_mirna_normalized']} can refer to mature arms such as {diagnostics['query_mirna_normalized']}-3p and {diagnostics['query_mirna_normalized']}-5p; results were retrieved across matching arms where available."
+            )
 
     # --- Pathway filtering (strict, filter-only) ---
     pathway_selection = cfg.pathway_selection or {}
@@ -1258,6 +1496,34 @@ def retrieve_from_queryspec(
         tcga = queryspec.get("tcga")
 
     filters = queryspec.get("filters") or {}
+    original_question = str(queryspec.get("original_question") or queryspec.get("question") or "")
+    original_question_l = original_question.lower()
+    user_requested_strict_support = any(
+        phrase in original_question_l
+        for phrase in [
+            "high confidence",
+            "high-confidence",
+            "multiple evidence",
+            "multiple lines of evidence",
+            "at least 2",
+            "minimum support 2",
+            "min support 2",
+        ]
+    )
+    pathway_filter_cfg = queryspec.get("pathway_filter") or {}
+    simple_broad_mirna_query = bool(
+        (queryspec.get("mode") == "mirna_to_targets")
+        and not tcga
+        and not bool(pathway_filter_cfg.get("enabled"))
+        and not bool(filters.get("require_binding_evidence", False))
+        and not bool(filters.get("require_expression", False))
+    )
+    allow_min_support_relaxation = bool(
+        simple_broad_mirna_query
+        and get_use_learned_score()
+        and int(filters.get("min_support", 1)) <= 2
+        and not user_requested_strict_support
+    )
     pathway_selection = pathway_selection or queryspec.get("pathway_selection") or {}
     pathway_gene_map = (
         pathway_selection.get("_selected_gene_pathways")
@@ -1287,6 +1553,8 @@ def retrieve_from_queryspec(
         require_expression=bool(filters.get("require_expression", False)),
         collapse_duplicates=True,
         use_mirtarbase_evidence=use_mirtarbase_evidence(),
+        allow_min_support_relaxation=allow_min_support_relaxation,
+        user_requested_strict_support=user_requested_strict_support,
     )
 
     fetch_diagnostics: Dict[str, Any] = {"evidence_backend": get_evidence_backend()}

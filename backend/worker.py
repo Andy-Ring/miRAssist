@@ -206,7 +206,7 @@ def run_query_job(
             diagnostics_bits = list(retrieval_diagnostics.get("warnings") or [])
             if pathway_selection.get("warnings"):
                 diagnostics_bits.extend(pathway_selection.get("warnings") or [])
-            summary = "No candidates passed the current filters."
+            summary = retrieval_diagnostics.get("no_candidates_explanation") or "No candidates passed the current filters."
             if diagnostics_bits:
                 summary += " Diagnostics: " + "; ".join(dict.fromkeys(diagnostics_bits))
             answer_obj = {
