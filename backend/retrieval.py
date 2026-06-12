@@ -12,6 +12,7 @@ import pandas as pd
 
 from backend.config import (
     get_db_candidate_limit,
+    get_default_mirna_arm,
     get_default_k,
     get_evidence_backend,
     get_evidence_table,
@@ -253,6 +254,23 @@ def _sql_in_clause(column_sql: str, param_prefix: str, values: List[str], params
     return f"{column_sql} IN ({', '.join(placeholders)})"
 
 
+def _postgres_rank_tiebreak_columns(available: set[str]) -> List[str]:
+    order_columns: List[str] = []
+    if "support_count" in available:
+        order_columns.append('"support_count" DESC NULLS LAST')
+    if "mirdb_best_score" in available:
+        order_columns.append('"mirdb_best_score" DESC NULLS LAST')
+    if "ts_context_strength" in available:
+        order_columns.append('"ts_context_strength" DESC NULLS LAST')
+    elif "ts_best_contextpp" in available:
+        order_columns.append('"ts_best_contextpp" ASC NULLS LAST')
+    if "clip_exp_sum" in available:
+        order_columns.append('"clip_exp_sum" DESC NULLS LAST')
+    if "best_mfe" in available:
+        order_columns.append('"best_mfe" ASC NULLS LAST')
+    return order_columns
+
+
 def build_postgres_candidate_query(
     query_token: str,
     cfg: "RetrievalConfig",
@@ -322,9 +340,13 @@ def build_postgres_candidate_query(
     order_columns: List[str] = []
     if get_use_learned_score() and learned_score_column in available:
         order_columns.append(f"{quote_identifier(learned_score_column)} DESC NULLS LAST")
-    for col in ("retrieval_score", "support_count", "mirdb_best_score", "ts_context_strength"):
-        if col in available:
-            order_columns.append(f"{quote_identifier(col)} DESC NULLS LAST")
+        order_columns.extend(_postgres_rank_tiebreak_columns(available))
+        if "retrieval_score" in available:
+            order_columns.append('"retrieval_score" DESC NULLS LAST')
+    else:
+        if "retrieval_score" in available:
+            order_columns.append('"retrieval_score" DESC NULLS LAST')
+        order_columns.extend(_postgres_rank_tiebreak_columns(available))
     if not order_columns:
         order_columns.append(f"{quote_identifier('gene_symbol')} ASC")
 
@@ -346,7 +368,7 @@ def build_postgres_candidate_query(
         "query_direction": direction,
         "sql_selected_columns": list(selected_columns),
         "sql_order_columns": list(order_columns),
-        "exact_mirna_variants_used": list(mirna_variants or []),
+        "primary_mirna_variants": list(mirna_variants or []),
         "mirna_prefix_patterns_used": list(mirna_prefix_patterns or []),
     }
     return query, params, selected_columns, diagnostics
@@ -367,16 +389,31 @@ def _fetch_postgres_candidate_pool(
     table_name = get_evidence_table()
     available_columns = _get_postgres_table_columns(table_name)
     direction = _direction_from_token(_normalize_token(query_token))
-    exact_variants = _exact_mirna_query_variants(query_token) if direction == "mirna_to_targets" else []
-    expanded_variants = expand_mirna_query_variants(query_token) if direction == "mirna_to_targets" else []
+    default_arm = get_default_mirna_arm()
+    expansion = expand_mirna_query_variants(query_token, default_arm=default_arm) if direction == "mirna_to_targets" else {}
+    primary_variants = list(expansion.get("primary_variants") or []) if direction == "mirna_to_targets" else []
+    fallback_variants = list(expansion.get("fallback_variants") or []) if direction == "mirna_to_targets" else []
     prefix_patterns = _mirna_prefix_fallback_patterns(query_token) if direction == "mirna_to_targets" else []
 
     diagnostics: Dict[str, Any] = {
         "evidence_backend": "postgres",
-        "exact_mirna_variants_used": list(exact_variants),
-        "searched_mirna_variants": list(exact_variants),
-        "mature_arm_expansion_attempted": bool(direction == "mirna_to_targets" and len(expanded_variants) > len(exact_variants)),
+        "raw_mirna_query": str(query_token or "") if direction == "mirna_to_targets" else None,
+        "normalized_mirna_query": expansion.get("normalized_input") if direction == "mirna_to_targets" else None,
+        "query_mirna_normalized": _normalize_mirna_query(query_token)[0] if direction == "mirna_to_targets" else None,
+        "explicit_mirna_arm": bool(expansion.get("explicit_arm")) if direction == "mirna_to_targets" else False,
+        "default_mirna_arm": default_arm if direction == "mirna_to_targets" else None,
+        "primary_mirna_variants": list(primary_variants),
+        "fallback_mirna_variants": list(fallback_variants),
+        "exact_mirna_variants_used": list(primary_variants),
+        "searched_mirna_variants": list(primary_variants),
+        "variants_used": [],
+        "mature_arm_expansion_attempted": bool(direction == "mirna_to_targets" and not expansion.get("explicit_arm")),
+        "mature_arm_expansion_used": False,
         "mirna_prefix_fallback_attempted": False,
+        "mirna_prefix_fallback_used": False,
+        "n_rows_primary": 0,
+        "n_rows_fallback": 0,
+        "arm_interpretation_note": expansion.get("note") if direction == "mirna_to_targets" else None,
     }
 
     def _run_query(mirna_variants: Optional[List[str]], mirna_like_patterns: Optional[List[str]]) -> Tuple[pd.DataFrame, Dict[str, Any], List[str]]:
@@ -396,24 +433,26 @@ def _fetch_postgres_candidate_pool(
         return frame, diag, selected_cols
 
     if direction == "mirna_to_targets":
-        df, query_diagnostics, selected_columns = _run_query(exact_variants, None)
+        df, query_diagnostics, selected_columns = _run_query(primary_variants, None)
         diagnostics.update(query_diagnostics)
-        diagnostics["exact_mirna_variants_used"] = list(exact_variants)
-        diagnostics["searched_mirna_variants"] = list(exact_variants)
-        if df.empty and expanded_variants and expanded_variants != exact_variants:
-            df, query_diagnostics, selected_columns = _run_query(expanded_variants, None)
+        diagnostics["n_rows_primary"] = int(len(df))
+        if not df.empty:
+            diagnostics["variants_used"] = list(primary_variants)
+            diagnostics["mature_arm_expansion_used"] = not bool(expansion.get("explicit_arm"))
+        if df.empty and fallback_variants:
+            df, query_diagnostics, selected_columns = _run_query(fallback_variants, None)
             diagnostics.update(query_diagnostics)
-            diagnostics["mature_arm_expansion_used"] = True
-            diagnostics["searched_mirna_variants"] = list(expanded_variants)
-        else:
-            diagnostics["mature_arm_expansion_used"] = False
+            diagnostics["n_rows_fallback"] = int(len(df))
+            diagnostics["searched_mirna_variants"] = list(fallback_variants)
+            if not df.empty:
+                diagnostics["variants_used"] = list(fallback_variants)
         if df.empty and prefix_patterns:
             diagnostics["mirna_prefix_fallback_attempted"] = True
             df, query_diagnostics, selected_columns = _run_query(None, prefix_patterns)
             diagnostics.update(query_diagnostics)
             diagnostics["mirna_prefix_fallback_used"] = not df.empty
-        else:
-            diagnostics["mirna_prefix_fallback_used"] = False
+            if not df.empty:
+                diagnostics["variants_used"] = list(prefix_patterns)
     else:
         df, query_diagnostics, selected_columns = _run_query(None, None)
         diagnostics.update(query_diagnostics)
@@ -501,6 +540,8 @@ def apply_learned_score_ranking(
     retrieval_score = _safe_float_col(ranked, "retrieval_score", default=0.0)
     support_tiebreak = _safe_float_col(ranked, "support_count", default=0.0)
     mirdb_tiebreak = _safe_float_col(ranked, "mirdb_best_score", default=0.0)
+    clip_tiebreak = _safe_float_col(ranked, "clip_exp_sum", default=0.0)
+    mfe_tiebreak = np.clip(-_safe_float_col(ranked, "best_mfe", default=0.0), 0.0, 100.0)
     if "ts_context_strength" in ranked.columns:
         ts_tiebreak = _safe_float_col(ranked, "ts_context_strength", default=0.0)
     elif "retrieval_ts_contrib" in ranked.columns:
@@ -519,21 +560,26 @@ def apply_learned_score_ranking(
     ranked = ranked.assign(
         retrieval_rank_score=retrieval_score.astype(float),
         learned_score_used=pd.Series(np.zeros(len(ranked), dtype=int), index=ranked.index),
+        _learned_score_missing=pd.Series(np.ones(len(ranked), dtype=int), index=ranked.index),
         _retrieval_support_tiebreak=support_tiebreak.astype(float),
         _retrieval_mirdb_tiebreak=mirdb_tiebreak.astype(float),
         _retrieval_ts_tiebreak=ts_tiebreak.astype(float),
+        _retrieval_clip_tiebreak=clip_tiebreak.astype(float),
+        _retrieval_mfe_tiebreak=mfe_tiebreak.astype(float),
     )
 
     if not enabled:
         ranked = ranked.sort_values(
             [
                 "retrieval_rank_score",
-                "retrieval_score",
                 "_retrieval_support_tiebreak",
                 "_retrieval_mirdb_tiebreak",
                 "_retrieval_ts_tiebreak",
+                "_retrieval_clip_tiebreak",
+                "_retrieval_mfe_tiebreak",
+                "retrieval_score",
             ],
-            ascending=[False, False, False, False, False],
+            ascending=[False, False, False, False, False, False, False],
         )
         return ranked, diagnostics
 
@@ -544,12 +590,14 @@ def apply_learned_score_ranking(
         ranked = ranked.sort_values(
             [
                 "retrieval_rank_score",
-                "retrieval_score",
                 "_retrieval_support_tiebreak",
                 "_retrieval_mirdb_tiebreak",
                 "_retrieval_ts_tiebreak",
+                "_retrieval_clip_tiebreak",
+                "_retrieval_mfe_tiebreak",
+                "retrieval_score",
             ],
-            ascending=[False, False, False, False, False],
+            ascending=[False, False, False, False, False, False, False],
         )
         return ranked, diagnostics
 
@@ -558,16 +606,20 @@ def apply_learned_score_ranking(
     ranked = ranked.assign(
         retrieval_rank_score=learned_score_values.where(~learned_score_missing, retrieval_score).astype(float),
         learned_score_used=(~learned_score_missing).astype(int),
+        _learned_score_missing=learned_score_missing.astype(int),
     )
     ranked = ranked.sort_values(
         [
+            "_learned_score_missing",
             "retrieval_rank_score",
-            "retrieval_score",
             "_retrieval_support_tiebreak",
             "_retrieval_mirdb_tiebreak",
             "_retrieval_ts_tiebreak",
+            "_retrieval_clip_tiebreak",
+            "_retrieval_mfe_tiebreak",
+            "retrieval_score",
         ],
-        ascending=[False, False, False, False, False],
+        ascending=[True, False, False, False, False, False, False, False],
     )
     diagnostics.update(
         {
@@ -599,37 +651,57 @@ def _strip_species_prefix(s: str) -> str:
     return _SPECIES_PREFIX_RE.sub("", s.strip())
 
 
+def normalize_mirna_name(raw: str) -> str:
+    s = str(raw or "").strip()
+    if not s:
+        return ""
+
+    s = (
+        s.replace("\u2010", "-")
+        .replace("\u2011", "-")
+        .replace("\u2012", "-")
+        .replace("\u2013", "-")
+        .replace("\u2014", "-")
+        .replace("\u2212", "-")
+        .replace("_", "-")
+    )
+    s = re.sub(r"\s+", "", s)
+    s = s.lower()
+    species_prefix = _species_prefix_from_raw_mirna(s)
+    if species_prefix:
+        s = _strip_species_prefix(s)
+
+    s = _MICRORNA_PREFIX_RE.sub("mir-", s)
+    s = _MIRNA_WORD_PREFIX_RE.sub("mir-", s)
+    s = re.sub(r"^(mir|let)(?=[0-9a-z])", r"\1-", s)
+    s = re.sub(r"^mir(?=[0-9a-z])", "mir-", s)
+    s = re.sub(r"^(mir|let)(?=[0-9a-z])", r"\1-", s)
+    s = re.sub(r"-{2,}", "-", s).strip("-")
+    if species_prefix:
+        s = f"{species_prefix}-{s}"
+    return s
+
+
+def mirna_has_explicit_arm(norm: str) -> bool:
+    return bool(re.search(r"(?i)-(3p|5p)$", str(norm or "").strip()))
+
+
 def _normalize_mirna_query(user_mirna: str) -> Tuple[str, Optional[str]]:
     """
     Returns (base, arm) where base is normalized like:
       "mir-21", "mir-17-5", "let-7a", etc. (lowercase, hyphen-delimited)
     arm is "3p"/"5p" if explicitly provided by user, else None.
     """
-    s = (user_mirna or "").strip()
-    if not s:
+    normalized = normalize_mirna_name(user_mirna)
+    if not normalized:
         return "", None
 
-    # normalize weird hyphens/underscores/spaces
-    s = s.replace("_", "-").replace("-", "-")
-    s = re.sub(r"\s+", "", s)
-
-    # strip "microRNA" textual prefix if present
-    s = _MICRORNA_PREFIX_RE.sub("mir-", s)
-    s = _MIRNA_WORD_PREFIX_RE.sub("mir-", s)
-
-    # strip species prefix (hsa-/mmu- etc)
-    s = _strip_species_prefix(s)
-
-    s = s.lower()
-
+    s = _strip_species_prefix(normalized).lower()
     arm = None
     m = _ARM_RE.search(s)
     if m:
         arm = m.group(1).lower()
         s = _ARM_RE.sub("", s)
-
-    # ensure mir- / let- delimiter
-    s = re.sub(r"^(mir|let)(?=[0-9a-z])", r"\1-", s)
     s = re.sub(r"-{2,}", "-", s).strip("-")
     return s, arm
 
@@ -654,33 +726,64 @@ def _dedupe_preserve_order(values: Iterable[str]) -> List[str]:
     return out
 
 
-def expand_mirna_query_variants(raw_mirna: str) -> List[str]:
-    base, arm = _normalize_mirna_query(raw_mirna)
-    if not base:
-        return []
+def _display_mirna_name(norm: str) -> str:
+    text = str(norm or "").strip()
+    if not text:
+        return ""
+    if text.startswith("hsa-mir-"):
+        return "hsa-miR-" + text[len("hsa-mir-") :]
+    if text.startswith("mir-"):
+        return "miR-" + text[len("mir-") :]
+    return text
 
+
+def expand_mirna_query_variants(raw_mirna: str, default_arm: str = "5p") -> Dict[str, Any]:
+    normalized_input = normalize_mirna_name(raw_mirna)
     species_prefix = _species_prefix_from_raw_mirna(raw_mirna)
     species_prefixes = _dedupe_preserve_order([species_prefix, "hsa"])
+    base, arm = _normalize_mirna_query(raw_mirna)
+    explicit_arm = arm in {"3p", "5p"}
+    default_arm = str(default_arm or "5p").strip().lower()
+    if default_arm not in {"5p", "3p", "both"}:
+        default_arm = "5p"
 
-    if arm in {"3p", "5p"}:
-        canonical_forms = [f"{base}-{arm}"]
+    if not base:
+        return {
+            "normalized_input": normalized_input,
+            "explicit_arm": False,
+            "primary_variants": [],
+            "fallback_variants": [],
+            "note": None,
+        }
+
+    def _with_species(forms: List[str]) -> List[str]:
+        prefixed = [f"{prefix}-{form}" for prefix in species_prefixes for form in forms]
+        return _dedupe_preserve_order(forms + prefixed)
+
+    if explicit_arm:
+        primary_forms = [f"{base}-{arm}"]
+        note = None
+    elif default_arm == "both":
+        primary_forms = [f"{base}-5p", f"{base}-3p"]
+        note = (
+            f"No mature arm was specified, so miRAssist searched both {_display_mirna_name(f'{base}-5p')} and {_display_mirna_name(f'{base}-3p')} mature arms."
+        )
     else:
-        canonical_forms = [base, f"{base}-3p", f"{base}-5p"]
+        primary_forms = [f"{base}-{default_arm}"]
+        other_arm = "3p" if default_arm == "5p" else "5p"
+        note = (
+            f"No mature arm was specified, so miRAssist interpreted this as {_display_mirna_name(f'{base}-{default_arm}')} by default. "
+            f"Search {_display_mirna_name(f'{base}-{other_arm}')} explicitly to retrieve {other_arm}-arm targets."
+        )
 
-    prefixed_forms = [f"{prefix}-{form}" for prefix in species_prefixes for form in canonical_forms]
-    return _dedupe_preserve_order(canonical_forms + prefixed_forms)
-
-
-def _exact_mirna_query_variants(raw_mirna: str) -> List[str]:
-    base, arm = _normalize_mirna_query(raw_mirna)
-    if not base:
-        return []
-
-    species_prefix = _species_prefix_from_raw_mirna(raw_mirna)
-    species_prefixes = _dedupe_preserve_order([species_prefix, "hsa"])
-    canonical = f"{base}-{arm}" if arm in {"3p", "5p"} else base
-    prefixed = [f"{prefix}-{canonical}" for prefix in species_prefixes]
-    return _dedupe_preserve_order([canonical] + prefixed)
+    fallback_forms = [] if explicit_arm else [base]
+    return {
+        "normalized_input": normalized_input,
+        "explicit_arm": explicit_arm,
+        "primary_variants": _with_species(primary_forms),
+        "fallback_variants": _with_species(fallback_forms),
+        "note": note,
+    }
 
 
 def _mirna_prefix_fallback_patterns(raw_mirna: str) -> List[str]:
@@ -701,25 +804,16 @@ def _normalize_mirna_table_value(v: str) -> Tuple[str, Optional[str]]:
     """
     if v is None:
         return "", None
-    s = str(v).strip()
-    if not s:
+    normalized = normalize_mirna_name(v)
+    if not normalized:
         return "", None
-    s = s.replace("_", "-").replace("-", "-")
-    s = re.sub(r"\s+", "", s)
-    s = _MICRORNA_PREFIX_RE.sub("mir-", s)
-    s = _MIRNA_WORD_PREFIX_RE.sub("mir-", s)
-    s = _strip_species_prefix(s)
-    s = s.lower()
+    s = _strip_species_prefix(normalized).lower()
 
     arm = None
     m = _ARM_RE.search(s)
     if m:
         arm = m.group(1).lower()
         s = _ARM_RE.sub("", s)
-
-    # "mir21" -> "mir-21", "let7a" -> "let-7a"
-    s = re.sub(r"^(mir|let)(?=[0-9a-z])", r"\1-", s)
-    s = re.sub(r"-{2,}", "-", s).strip("-")
 
     # Some tables contain "mir" alone, ignore that
     if s in ("mir", "let"):
@@ -728,77 +822,96 @@ def _normalize_mirna_table_value(v: str) -> Tuple[str, Optional[str]]:
     return s, arm
 
 
+def _match_mirna_names_for_table(user_mirna: str, mirna_series: pd.Series) -> Dict[str, List[str]]:
+    expansion = expand_mirna_query_variants(user_mirna, default_arm=get_default_mirna_arm())
+    vals = mirna_series.dropna().astype(str)
+    if vals.empty:
+        return {"primary": [], "fallback": [], "prefix": []}
+
+    primary_variants = {str(value or "").strip().lower() for value in (expansion.get("primary_variants") or []) if str(value or "").strip()}
+    fallback_variants = {str(value or "").strip().lower() for value in (expansion.get("fallback_variants") or []) if str(value or "").strip()}
+    prefix_patterns = [str(pattern or "").strip().lower() for pattern in _mirna_prefix_fallback_patterns(user_mirna) if str(pattern or "").strip()]
+
+    primary_hits: List[str] = []
+    fallback_hits: List[str] = []
+    prefix_hits: List[str] = []
+    for raw in vals.unique().tolist():
+        normalized_name = normalize_mirna_name(raw)
+        if not normalized_name:
+            continue
+        lowered = normalized_name.lower()
+        if lowered in primary_variants:
+            primary_hits.append(raw)
+        elif lowered in fallback_variants:
+            fallback_hits.append(raw)
+        elif prefix_patterns and any(lowered.startswith(pattern[:-1]) for pattern in prefix_patterns):
+            prefix_hits.append(raw)
+
+    return {
+        "primary": _dedupe_preserve_order(primary_hits),
+        "fallback": _dedupe_preserve_order(fallback_hits),
+        "prefix": _dedupe_preserve_order(prefix_hits),
+    }
+
+
 def resolve_mirna_names_for_table(user_mirna: str, mirna_series: pd.Series) -> List[str]:
     """
     Map user query -> EXACT values present in the table, but matched via normalization.
-    If no arm specified: prefer 5p, then base-only, then 3p.
+    If no arm specified: prefer the configured default mature arm, then legacy base rows.
     """
-    q_base, q_arm = _normalize_mirna_query(user_mirna)
-    if not q_base:
-        return []
-
-    vals = mirna_series.dropna().astype(str)
-    if vals.empty:
-        return []
-
-    # Build normalization map once for unique names
-    uniq = vals.unique().tolist()
-    norm_map: Dict[Tuple[str, Optional[str]], List[str]] = {}
-    for raw in uniq:
-        b, a = _normalize_mirna_table_value(raw)
-        if not b:
-            continue
-        norm_map.setdefault((b, a), []).append(raw)
-
-    def hits_for(base: str, arm: Optional[str]) -> List[str]:
-        out = []
-        if (base, arm) in norm_map:
-            out.extend(norm_map[(base, arm)])
-        return out
-
-    # if explicit arm, try that first, then base-only
-    if q_arm in ("3p", "5p"):
-        h = hits_for(q_base, q_arm)
-        if h:
-            return sorted(set(h))
-        h = hits_for(q_base, None)
-        return sorted(set(h))
-
-    # no arm: match available arm-specific and base-only entries for this family
-    combined: List[str] = []
-    for arm_try in ("5p", None, "3p"):
-        combined.extend(hits_for(q_base, arm_try))
-    return sorted(set(combined))
+    matches = _match_mirna_names_for_table(user_mirna, mirna_series)
+    if matches["primary"]:
+        return matches["primary"]
+    if matches["fallback"]:
+        return matches["fallback"]
+    return matches["prefix"]
 
 
 def _filter_mirna_rows(df: pd.DataFrame, raw_mirna: str) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    default_arm = get_default_mirna_arm()
+    expansion = expand_mirna_query_variants(raw_mirna, default_arm=default_arm)
     diagnostics: Dict[str, Any] = {
+        "raw_mirna_query": str(raw_mirna or ""),
+        "normalized_mirna_query": expansion.get("normalized_input"),
         "query_mirna_normalized": _normalize_mirna_query(raw_mirna)[0],
-        "exact_mirna_variants_used": _exact_mirna_query_variants(raw_mirna),
-        "searched_mirna_variants": _exact_mirna_query_variants(raw_mirna),
-        "mature_arm_expansion_attempted": False,
+        "explicit_mirna_arm": bool(expansion.get("explicit_arm")),
+        "default_mirna_arm": default_arm,
+        "primary_mirna_variants": list(expansion.get("primary_variants") or []),
+        "fallback_mirna_variants": list(expansion.get("fallback_variants") or []),
+        "exact_mirna_variants_used": list(expansion.get("primary_variants") or []),
+        "variants_used": [],
+        "searched_mirna_variants": list(expansion.get("primary_variants") or []),
+        "mature_arm_expansion_attempted": not bool(expansion.get("explicit_arm")),
         "mature_arm_expansion_used": False,
         "mirna_prefix_fallback_attempted": False,
         "mirna_prefix_fallback_used": False,
+        "n_rows_primary": 0,
+        "n_rows_fallback": 0,
+        "arm_interpretation_note": expansion.get("note"),
     }
     if df.empty:
         return df, diagnostics
 
-    exact_variants = diagnostics["exact_mirna_variants_used"]
-    expanded_variants = expand_mirna_query_variants(raw_mirna)
+    primary_variants = list(expansion.get("primary_variants") or [])
+    fallback_variants = list(expansion.get("fallback_variants") or [])
     prefix_patterns = _mirna_prefix_fallback_patterns(raw_mirna)
 
     if "mirna_name_norm" in df.columns:
         norm_series = df["mirna_name_norm"].astype(str).str.strip().str.lower()
-        exact_mask = norm_series.isin([value.lower() for value in exact_variants])
-        filtered = df.loc[exact_mask].copy()
+        primary_mask = norm_series.isin([value.lower() for value in primary_variants])
+        filtered = df.loc[primary_mask].copy()
+        diagnostics["n_rows_primary"] = int(len(filtered))
+        if not filtered.empty:
+            diagnostics["variants_used"] = list(primary_variants)
+            diagnostics["mature_arm_expansion_used"] = not bool(expansion.get("explicit_arm"))
 
-        if filtered.empty and expanded_variants and expanded_variants != exact_variants:
-            diagnostics["mature_arm_expansion_attempted"] = True
-            expanded_mask = norm_series.isin([value.lower() for value in expanded_variants])
-            filtered = df.loc[expanded_mask].copy()
-            diagnostics["mature_arm_expansion_used"] = not filtered.empty
-            diagnostics["searched_mirna_variants"] = list(expanded_variants)
+        if filtered.empty and fallback_variants:
+            fallback_mask = norm_series.isin([value.lower() for value in fallback_variants])
+            filtered = df.loc[fallback_mask].copy()
+            diagnostics["n_rows_fallback"] = int(len(filtered))
+            if not filtered.empty:
+                diagnostics["variants_used"] = list(fallback_variants)
+                diagnostics["searched_mirna_variants"] = list(fallback_variants)
 
         if filtered.empty and prefix_patterns:
             diagnostics["mirna_prefix_fallback_attempted"] = True
@@ -807,17 +920,49 @@ def _filter_mirna_rows(df: pd.DataFrame, raw_mirna: str) -> Tuple[pd.DataFrame, 
                 prefix_mask |= norm_series.str.startswith(pattern[:-1])
             filtered = df.loc[prefix_mask].copy()
             diagnostics["mirna_prefix_fallback_used"] = not filtered.empty
+            if not filtered.empty:
+                diagnostics["variants_used"] = list(prefix_patterns)
 
         matched = filtered["mirna_name"].dropna().astype(str).unique().tolist() if "mirna_name" in filtered.columns else []
         diagnostics["matched_mirna_names"] = matched[:20]
         return filtered, diagnostics
 
-    allowed = resolve_mirna_names_for_table(raw_mirna, df["mirna_name"])
-    diagnostics["matched_mirna_names"] = allowed[:20]
-    if not allowed:
-        return df.head(0).copy(), diagnostics
-    allowed_l = {a.lower() for a in allowed}
-    filtered = df[df["mirna_name"].astype(str).str.lower().isin(allowed_l)].copy()
+    matches = _match_mirna_names_for_table(raw_mirna, df["mirna_name"])
+    filtered = df.head(0).copy()
+
+    primary_allowed = matches["primary"]
+    fallback_allowed = matches["fallback"]
+    prefix_allowed = matches["prefix"]
+    if primary_allowed:
+        allowed_l = {value.lower() for value in primary_allowed}
+        filtered = df[df["mirna_name"].astype(str).str.lower().isin(allowed_l)].copy()
+        diagnostics["n_rows_primary"] = int(len(filtered))
+        diagnostics["variants_used"] = list(primary_variants)
+        diagnostics["matched_mirna_names"] = primary_allowed[:20]
+        diagnostics["mature_arm_expansion_used"] = not bool(expansion.get("explicit_arm"))
+        return filtered, diagnostics
+
+    if fallback_allowed:
+        allowed_l = {value.lower() for value in fallback_allowed}
+        filtered = df[df["mirna_name"].astype(str).str.lower().isin(allowed_l)].copy()
+        diagnostics["n_rows_fallback"] = int(len(filtered))
+        diagnostics["variants_used"] = list(fallback_variants)
+        diagnostics["searched_mirna_variants"] = list(fallback_variants)
+        diagnostics["matched_mirna_names"] = fallback_allowed[:20]
+        return filtered, diagnostics
+
+    if prefix_allowed:
+        diagnostics["mirna_prefix_fallback_attempted"] = True
+        allowed_l = {value.lower() for value in prefix_allowed}
+        filtered = df[df["mirna_name"].astype(str).str.lower().isin(allowed_l)].copy()
+        diagnostics["mirna_prefix_fallback_used"] = not filtered.empty
+        diagnostics["variants_used"] = list(prefix_patterns)
+        diagnostics["matched_mirna_names"] = prefix_allowed[:20]
+        return filtered, diagnostics
+
+    if prefix_patterns:
+        diagnostics["mirna_prefix_fallback_attempted"] = True
+    diagnostics["matched_mirna_names"] = []
     return filtered, diagnostics
 
 
@@ -1292,7 +1437,11 @@ def retrieve_candidates(
         diagnostics.update(mirna_match_diagnostics)
         matched_tokens = list(diagnostics.get("matched_mirna_names") or [])
         if df.empty:
-            attempted = diagnostics.get("exact_mirna_variants_used") or [diagnostics.get("query_mirna_normalized")]
+            attempted = (
+                diagnostics.get("primary_mirna_variants")
+                or diagnostics.get("fallback_mirna_variants")
+                or [diagnostics.get("query_mirna_normalized")]
+            )
             diagnostics["warnings"].append(
                 "No miRNA names in the evidence table matched the query after normalization. "
                 f"Searched normalized forms: {', '.join([str(v) for v in attempted if v])}."
@@ -1357,17 +1506,9 @@ def retrieve_candidates(
     diagnostics["n_after_collapse_duplicates"] = int(len(df))
 
     if direction == "mirna_to_targets":
-        matched_arms = sorted(
-            {
-                arm
-                for _, arm in (_normalize_mirna_table_value(value) for value in df["mirna_name"].dropna().astype(str).unique().tolist())
-                if arm in {"3p", "5p"}
-            }
-        )
-        if len(matched_arms) >= 2 and diagnostics.get("query_mirna_normalized"):
-            diagnostics.setdefault("user_notes", []).append(
-                f"{diagnostics['query_mirna_normalized']} can refer to mature arms such as {diagnostics['query_mirna_normalized']}-3p and {diagnostics['query_mirna_normalized']}-5p; results were retrieved across matching arms where available."
-            )
+        arm_note = diagnostics.get("arm_interpretation_note")
+        if arm_note:
+            diagnostics.setdefault("user_notes", []).append(str(arm_note))
 
     # --- Pathway filtering (strict, filter-only) ---
     pathway_selection = cfg.pathway_selection or {}
@@ -1465,6 +1606,8 @@ def retrieve_candidates(
                 "_retrieval_support_tiebreak",
                 "_retrieval_mirdb_tiebreak",
                 "_retrieval_ts_tiebreak",
+                "_retrieval_clip_tiebreak",
+                "_retrieval_mfe_tiebreak",
             ]
             if col in df.columns
         ],

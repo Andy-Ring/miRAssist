@@ -62,6 +62,8 @@ def _assert_ranking_behavior() -> None:
                 "support_count": 3,
                 "mirdb_best_score": 80,
                 "ts_context_strength": 0.42,
+                "clip_exp_sum": 12,
+                "best_mfe": -24.0,
                 "learned_score_xgb_raw_v1": 0.40,
             },
             {
@@ -70,6 +72,8 @@ def _assert_ranking_behavior() -> None:
                 "support_count": 2,
                 "mirdb_best_score": 70,
                 "ts_context_strength": 0.20,
+                "clip_exp_sum": 8,
+                "best_mfe": -20.0,
                 "learned_score_xgb_raw_v1": None,
             },
             {
@@ -78,6 +82,8 @@ def _assert_ranking_behavior() -> None:
                 "support_count": 1,
                 "mirdb_best_score": 65,
                 "ts_context_strength": 0.10,
+                "clip_exp_sum": 5,
+                "best_mfe": -18.0,
                 "learned_score_xgb_raw_v1": 0.90,
             },
         ]
@@ -88,9 +94,9 @@ def _assert_ranking_behavior() -> None:
         learned_score_column="learned_score_xgb_raw_v1",
         enabled=True,
     )
-    assert ranked_df["gene_symbol"].tolist() == ["GENE_C", "GENE_B", "GENE_A"]
-    assert ranked_df["retrieval_rank_score"].round(4).tolist() == [0.9, 0.8, 0.4]
-    assert ranked_df["learned_score_used"].tolist() == [1, 0, 1]
+    assert ranked_df["gene_symbol"].tolist() == ["GENE_C", "GENE_A", "GENE_B"]
+    assert ranked_df["retrieval_rank_score"].round(4).tolist() == [0.9, 0.4, 0.8]
+    assert ranked_df["learned_score_used"].tolist() == [1, 1, 0]
     assert diagnostics["learned_score_enabled"] is True
     assert diagnostics["learned_score_present_count"] == 2
     assert diagnostics["learned_score_missing_count"] == 1
@@ -123,7 +129,7 @@ def _assert_ranking_behavior() -> None:
         learned_score_column="learned_score_xgb_raw_v1",
         enabled=True,
     )
-    assert sparse_ranked_df["gene_symbol"].tolist() == ["GENE_Y", "GENE_X"]
+    assert sparse_ranked_df["gene_symbol"].tolist() == ["GENE_X", "GENE_Y"]
 
 
 def _assert_debug_truncation_and_json_safety() -> None:
@@ -194,12 +200,14 @@ def _assert_postgres_query_builder() -> None:
         "learned_score_xgb_raw_v1",
         "mirdb_best_score",
         "ts_context_strength",
+        "clip_exp_sum",
+        "best_mfe",
     ]
     query, params, selected_columns, diagnostics = build_postgres_candidate_query(
         "miR-210",
         cfg,
         available_columns,
-        mirna_variants=expand_mirna_query_variants("miR-210"),
+        mirna_variants=expand_mirna_query_variants("miR-210")["primary_variants"],
     )
     assert "LIMIT :candidate_limit" in query
     assert '"mirna_name_norm" IN (' in query
@@ -207,6 +215,15 @@ def _assert_postgres_query_builder() -> None:
     assert any(key.startswith("mirna_norm_") for key in params)
     assert "learned_score_xgb_raw_v1" in selected_columns
     assert diagnostics["evidence_backend"] == "postgres"
+    assert diagnostics["sql_order_columns"] == [
+        '"learned_score_xgb_raw_v1" DESC NULLS LAST',
+        '"support_count" DESC NULLS LAST',
+        '"mirdb_best_score" DESC NULLS LAST',
+        '"ts_context_strength" DESC NULLS LAST',
+        '"clip_exp_sum" DESC NULLS LAST',
+        '"best_mfe" ASC NULLS LAST',
+        '"retrieval_score" DESC NULLS LAST',
+    ]
 
 
 def main() -> None:

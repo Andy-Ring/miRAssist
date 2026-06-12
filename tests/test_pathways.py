@@ -256,7 +256,8 @@ class RetrievalPathwayFilterTests(unittest.TestCase):
             "warnings": [],
         }
 
-        shortlist, _, diagnostics = retrieve_from_queryspec(ev, qs, pathway_selection=pathway_selection)
+        with patch.dict("os.environ", {"EVIDENCE_BACKEND": "parquet"}, clear=False):
+            shortlist, _, diagnostics = retrieve_from_queryspec(ev, qs, pathway_selection=pathway_selection)
 
         self.assertEqual(shortlist["gene_symbol"].tolist(), ["BAX"])
         self.assertEqual(shortlist["pathway_selected_gene"].tolist(), [1])
@@ -297,8 +298,9 @@ class RetrievalPathwayFilterTests(unittest.TestCase):
             "warnings": [],
         }
 
-        shortlist, direction, diagnostics = retrieve_from_queryspec(ev, qs, pathway_selection=pathway_selection)
-        cards, card_diagnostics = cards_from_dataframe_with_diagnostics(shortlist, tcga="BRCA")
+        with patch.dict("os.environ", {"EVIDENCE_BACKEND": "parquet"}, clear=False):
+            shortlist, direction, diagnostics = retrieve_from_queryspec(ev, qs, pathway_selection=pathway_selection)
+            cards, card_diagnostics = cards_from_dataframe_with_diagnostics(shortlist, tcga="BRCA")
 
         self.assertEqual(direction, "mirna_to_targets")
         self.assertEqual(diagnostics["query_mirna_raw"], "miRNA-210")
@@ -308,6 +310,37 @@ class RetrievalPathwayFilterTests(unittest.TestCase):
         self.assertEqual(card_diagnostics["n_shortlist_rows"], len(shortlist))
         self.assertEqual(card_diagnostics["n_cards_generated"], len(shortlist))
         self.assertEqual(len(cards), len(shortlist))
+
+    def test_base_mirna_query_prefers_primary_arm_without_norm_column(self) -> None:
+        ev = pd.DataFrame(
+            [
+                {"mirna_name": "MiR-210", "gene_symbol": "EPHA2", "support_count": 1, "ts_best_contextpp": -0.1},
+                {"mirna_name": "hsa-miR-210-5p", "gene_symbol": "KCMF1", "support_count": 2, "ts_best_contextpp": -0.4},
+                {"mirna_name": "hsa-miR-210-3p", "gene_symbol": "ISCU", "support_count": 2, "ts_best_contextpp": -0.3},
+            ]
+        )
+        qs = {
+            "mode": "mirna_to_targets",
+            "mirna": "miRNA-210",
+            "gene": None,
+            "cancer": {"name": None, "tcga": None},
+            "pathway_filter": {"enabled": False, "mode": "filter", "min_gene_sets": 1},
+            "filters": {"min_support": 1, "require_binding_evidence": False, "require_expression": False},
+            "novel": False,
+            "k": 10,
+        }
+
+        with patch.dict("os.environ", {"MIRASSIST_DEFAULT_MIRNA_ARM": "5p", "EVIDENCE_BACKEND": "parquet"}, clear=False):
+            shortlist, direction, diagnostics = retrieve_from_queryspec(ev, qs, pathway_selection={"enabled": False, "warnings": []})
+
+        self.assertEqual(direction, "mirna_to_targets")
+        self.assertEqual(shortlist["gene_symbol"].tolist(), ["KCMF1"])
+        self.assertNotIn("EPHA2", shortlist["gene_symbol"].tolist())
+        self.assertEqual(diagnostics["n_rows_primary"], 1)
+        self.assertEqual(diagnostics["n_rows_fallback"], 0)
+        self.assertEqual(diagnostics["variants_used"], ["mir-210-5p", "hsa-mir-210-5p"])
+        self.assertEqual(diagnostics["matched_mirna_names"], ["hsa-miR-210-5p"])
+        self.assertIn("miR-210-5p", diagnostics.get("arm_interpretation_note") or "")
 
 
 class PathwayModeCompatibilityTests(unittest.TestCase):

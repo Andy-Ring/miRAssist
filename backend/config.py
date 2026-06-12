@@ -226,6 +226,11 @@ def get_learned_score_column() -> str:
     return (os.getenv("MIRASSIST_LEARNED_SCORE_COLUMN", "learned_score_xgb_raw_v1") or "learned_score_xgb_raw_v1").strip()
 
 
+def get_default_mirna_arm() -> str:
+    value = (os.getenv("MIRASSIST_DEFAULT_MIRNA_ARM", "5p") or "5p").strip().lower()
+    return value if value in {"5p", "3p", "both"} else "5p"
+
+
 def get_eval_mode() -> bool:
     return (os.getenv("MIRASSIST_EVAL_MODE", "0") or "0").strip() == "1"
 
