@@ -55,24 +55,25 @@ def cards_from_dataframe(df: pd.DataFrame, tcga: Optional[str] = None) -> List[D
                 )
 
         evidence_line_parts: List[str] = []
-        for section_name in [
-            "target_evidence",
-            "published_model_evidence",
-            "clip_binding_evidence",
-            "seed_site_evidence",
-            "structure_evidence",
-            "tcga_context_evidence",
-            "pathway_evidence",
-        ]:
-            evidence_line_parts.extend(sections.get(section_name, []))
+        family_summary = sections.get("family_evidence_summary") or {}
+        for family_name, family_info in family_summary.items():
+            if not family_info.get("available"):
+                continue
+            label = str(family_info.get("label") or family_name).strip()
+            key_evidence = list(family_info.get("key_evidence") or [])
+            support_percentile = family_info.get("support_percentile")
+            summary_text = label
+            if support_percentile is not None and not pd.isna(support_percentile):
+                summary_text += f": support={float(support_percentile):.1f}pct"
+            if key_evidence:
+                summary_text += f"; {key_evidence[0]}"
+            evidence_line_parts.append(summary_text)
 
         evidence_line = (
-            f"support_count={sections['support_count']}; " + "; ".join(evidence_line_parts)
+            f"family_count={sections['evidence_family_count']}; " + "; ".join(evidence_line_parts)
             if evidence_line_parts
-            else f"support_count={sections['support_count']}"
+            else f"family_count={sections['evidence_family_count']}"
         )
-        if sections.get("strongest_features"):
-            evidence_line = evidence_line + "; strongest=" + "; ".join(sections["strongest_features"][:4])
 
         cards.append(
             {
@@ -83,13 +84,17 @@ def cards_from_dataframe(df: pd.DataFrame, tcga: Optional[str] = None) -> List[D
                 "mirna_name": mirna,
                 "gene_symbol": gene,
                 "support_count": sections["support_count"],
+                "overall_evidence_support_percentile": sections["overall_evidence_support_percentile"],
                 "evidence_support_count": sections["evidence_support_count"],
+                "evidence_family_count": sections["evidence_family_count"],
                 "evidence_categories": sections["evidence_categories"],
                 "evidence_categories_present": sections["evidence_categories_present"],
+                "evidence_families_present": sections["evidence_families_present"],
                 "evidence_strength_summary": sections["evidence_strength_summary"],
                 "evidence_strength_tier": sections["evidence_strength_tier"],
                 "context_strength_tier": sections["context_strength_tier"],
                 "overall_priority_tier": sections["overall_priority_tier"],
+                "family_evidence_summary": sections["family_evidence_summary"],
                 "number_of_features_supporting_interaction": sections["number_of_features_supporting_interaction"],
                 "target_evidence": sections["target_evidence"],
                 "published_model_evidence": sections["published_model_evidence"],

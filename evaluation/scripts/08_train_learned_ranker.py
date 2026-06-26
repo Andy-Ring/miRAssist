@@ -879,6 +879,8 @@ def save_grouped_k_plot(df: pd.DataFrame, value_col: str, title: str, ylabel: st
 
 
 def save_feature_plot(df: pd.DataFrame, model_name: str, path: Path) -> None:
+    if df is None or df.empty or "model" not in df.columns or "feature" not in df.columns:
+        return
     subset = df[df["model"] == model_name].copy()
     if subset.empty:
         return

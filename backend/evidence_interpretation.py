@@ -8,14 +8,75 @@ import pandas as pd
 from backend.config import use_mirtarbase_evidence
 
 EVIDENCE_CATEGORY_LABELS: Dict[str, str] = {
-    "curated_validation": "miRTarBase",
-    "mirdb_model": "miRDB",
-    "targetscan_model": "TargetScan",
-    "clip_binding": "CLIP",
-    "seed_site": "Seed/site",
-    "structure_rnahybrid": "RNAhybrid/structure",
-    "tcga_context": "TCGA context",
-    "pathway_membership": "Pathway",
+    "sequence_complementarity": "Sequence complementarity",
+    "thermodynamic_stability": "Thermodynamic stability",
+    "sequence_conservation": "Sequence conservation",
+    "target_site_accessibility": "Target site accessibility",
+    "functional_binding": "Functional binding",
+    "functional_repression": "Functional repression",
+}
+
+FAMILY_PERCENTILE_COLUMNS: Dict[str, List[str]] = {
+    "sequence_complementarity": [
+        "sequence_complementarity_support_percentile",
+        "seed_pairing_score_percentile",
+        "n_seed_sites_percentile",
+    ],
+    "thermodynamic_stability": [
+        "thermodynamic_stability_support_percentile",
+        "rnahybrid_mfe_percentile",
+        "rnahybrid_mfe_best_site_percentile",
+        "rnahybrid_seed_mfe_percentile",
+        "rnahybrid_strength_percentile",
+        "mfe_strength_percentile",
+    ],
+    "sequence_conservation": [
+        "sequence_conservation_support_percentile",
+        "targetscan_context_score_support_percentile",
+        "targetscan_context_score_percentile_percentile",
+        "targetscan_context_score_percentile",
+        "targetscan_aggregate_context_score_percentile",
+        "targetscan_pct_percentile",
+        "targetscan_branch_length_score_percentile",
+        "ts_context_strength_percentile",
+        "ts_best_percentile_percentile",
+    ],
+    "target_site_accessibility": [
+        "target_site_accessibility_support_percentile",
+        "rnaplfold_best_seed_unpaired_prob_percentile",
+        "rnaplfold_mean_seed_unpaired_prob_percentile",
+        "rnaplfold_best_site_unpaired_prob_percentile",
+        "rnaplfold_mean_site_unpaired_prob_percentile",
+        "rnaplfold_best_flank_unpaired_prob_percentile",
+        "rnaplfold_mean_flank_unpaired_prob_percentile",
+        "rnaplfold_n_sites_scored_percentile",
+        "rnaplfold_n_accessible_sites_percentile",
+    ],
+    "functional_binding": [
+        "functional_binding_support_percentile",
+        "clip_max_score_percentile",
+        "clip_n_experiments_percentile",
+        "clip_n_cell_lines_percentile",
+        "encori_clip_score_percentile",
+        "clip_exp_sum_percentile",
+        "clip_exp_max_percentile",
+        "n_clip_sites_percentile",
+    ],
+    "functional_repression": [
+        "functional_repression_support_percentile",
+        "BRCA_spearman_rho_percentile",
+        "BRCA_repression_evidence_percentile",
+        "PRAD_spearman_rho_percentile",
+        "PRAD_repression_evidence_percentile",
+        "COAD_spearman_rho_percentile",
+        "COAD_repression_evidence_percentile",
+        "tcga_n_supported_contexts_percentile",
+        "tcga_best_repression_evidence_percentile",
+        "tcga_mean_spearman_rho_percentile",
+        "BRCA_anticorrelation_strength_percentile",
+        "COAD_anticorrelation_strength_percentile",
+        "PRAD_anticorrelation_strength_percentile",
+    ],
 }
 
 
@@ -47,18 +108,6 @@ def _as_list(value: Any) -> List[str]:
     return [str(value)]
 
 
-def _feature_phrase(row: pd.Series, feature: str, label: Optional[str] = None, fmt: str = "{value:g}") -> Optional[str]:
-    if feature not in row or pd.isna(row.get(feature)):
-        return None
-    value = row.get(feature)
-    text = fmt.format(value=float(value) if isinstance(value, (np.floating, float, int, np.integer)) else value)
-    percentile = row.get(f"{feature}_percentile")
-    percentile_label = row.get(f"{feature}_label")
-    if percentile is not None and not pd.isna(percentile) and percentile_label and percentile_label != "not available":
-        return f"{label or feature} {text} ({format_percentile(percentile)}; {percentile_label})"
-    return f"{label or feature} {text}"
-
-
 def format_percentile(percentile: float | int | None) -> str:
     if percentile is None or pd.isna(percentile):
         return "percentile not available"
@@ -70,20 +119,21 @@ def format_percentile(percentile: float | int | None) -> str:
     return f"{n}{suffix} percentile"
 
 
-def _annotation_suffix(row: pd.Series, feature: str, extras: Optional[List[str]] = None) -> str:
-    parts: List[str] = []
-    percentile = row.get(f"{feature}_percentile")
-    percentile_label = row.get(f"{feature}_label")
-    if percentile is not None and not pd.isna(percentile) and percentile_label and percentile_label != "not available":
-        parts.append(format_percentile(percentile))
-        parts.append(str(percentile_label))
-    for extra in extras or []:
-        text = str(extra or "").strip()
-        if text:
-            parts.append(text)
-    if not parts:
-        return ""
-    return " (" + "; ".join(parts) + ")"
+def _percentile_label(percentile: float | int | None) -> str:
+    if percentile is None or pd.isna(percentile):
+        return "not available"
+    pct = float(percentile)
+    if pct >= 95:
+        return "exceptional"
+    if pct >= 90:
+        return "very high"
+    if pct >= 75:
+        return "high"
+    if pct >= 50:
+        return "above average"
+    if pct >= 25:
+        return "typical"
+    return "low"
 
 
 def _dedupe_keep_order(values: List[str]) -> List[str]:
@@ -103,69 +153,71 @@ def _raw_value_if_present(row: pd.Series, key: str) -> Any:
     return value
 
 
-def _mirdb_label(score: float) -> str:
-    if score >= 90:
-        return "very strong miRDB support"
-    if score >= 80:
-        return "strong miRDB support"
-    if score >= 60:
-        return "moderate miRDB support"
-    return "weak miRDB support"
+def _first_present_value(row: pd.Series, columns: List[str]) -> Any:
+    for column in columns:
+        value = row.get(column)
+        if value is None:
+            continue
+        try:
+            if pd.isna(value):
+                continue
+        except TypeError:
+            pass
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return None
 
 
-def _best_seed_summary(row: pd.Series) -> Optional[str]:
-    best_seed = str(row.get("best_seed_class") or "").strip()
-    if not best_seed:
-        return None
-    if best_seed == "8mer":
-        return "best seed class 8mer (strong canonical seed support)"
-    if best_seed == "7mer-m8":
-        return "best seed class 7mer-m8 (strong canonical seed support)"
-    if best_seed == "7mer-a1":
-        return "best seed class 7mer-A1 (moderate canonical seed support)"
-    if best_seed == "6mer":
-        return "best seed class 6mer (weaker seed support)"
-    return f"best seed class {best_seed}"
+def _first_present_numeric(row: pd.Series, columns: List[str]) -> float:
+    for column in columns:
+        value = _as_float(row.get(column))
+        if np.isfinite(value):
+            return value
+    return np.nan
 
 
-def _label_rank(label: Any) -> int:
-    mapping = {
-        "exceptional": 5,
-        "very high": 4,
-        "high": 3,
-        "above average": 2,
-        "typical": 1,
-        "low": 0,
-        "not available": -1,
-    }
-    return mapping.get(str(label or "").strip().lower(), -1)
+def _format_support_suffix(
+    row: pd.Series,
+    percentile_columns: List[str],
+    extras: Optional[List[str]] = None,
+) -> str:
+    percentile_value = _first_present_numeric(row, percentile_columns)
+    parts: List[str] = []
+    if np.isfinite(percentile_value):
+        parts.append(format_percentile(percentile_value))
+        label = _percentile_label(percentile_value)
+        if label != "not available":
+            parts.append(label)
+    for extra in extras or []:
+        text = str(extra or "").strip()
+        if text:
+            parts.append(text)
+    if not parts:
+        return ""
+    return " (" + "; ".join(parts) + ")"
 
 
-def _has_high_strength_signal(row: pd.Series) -> bool:
-    checks = [
-        _label_rank(row.get("mirdb_best_score_label")) >= 3,
-        _label_rank(row.get("ts_context_strength_label")) >= 3,
-        _label_rank(row.get("clip_exp_sum_label")) >= 3,
-        _label_rank(row.get("n_clip_sites_label")) >= 3,
-        _label_rank(row.get("mfe_strength_label")) >= 3,
-        _label_rank(row.get("BRCA_anticorrelation_strength_label")) >= 3,
-        _label_rank(row.get("COAD_anticorrelation_strength_label")) >= 3,
-        _label_rank(row.get("PRAD_anticorrelation_strength_label")) >= 3,
-        _as_float(row.get("mirdb_best_score")) >= 80,
+def _append_line(lines: List[str], text: Optional[str]) -> None:
+    if not text:
+        return
+    text = str(text).strip()
+    if text and text not in lines:
+        lines.append(text)
+
+
+def _family_support_percentile(row: pd.Series, family: str) -> float:
+    explicit = _as_float(row.get(f"{family}_support_percentile"))
+    if np.isfinite(explicit):
+        return explicit
+    values = [
+        _as_float(row.get(column))
+        for column in FAMILY_PERCENTILE_COLUMNS.get(family, [])
+        if np.isfinite(_as_float(row.get(column)))
     ]
-    return any(checks)
-
-
-def _has_very_strong_signal(row: pd.Series) -> bool:
-    checks = [
-        _label_rank(row.get("mirdb_best_score_label")) >= 4,
-        _label_rank(row.get("ts_context_strength_label")) >= 4,
-        _label_rank(row.get("clip_exp_sum_label")) >= 4,
-        _label_rank(row.get("n_clip_sites_label")) >= 4,
-        _label_rank(row.get("mfe_strength_label")) >= 4,
-        _as_float(row.get("mirdb_best_score")) >= 90,
-    ]
-    return any(checks)
+    if not values:
+        return np.nan
+    return float(np.mean(values))
 
 
 def _context_signal_state(row: pd.Series, tcga: Optional[str]) -> str:
@@ -181,49 +233,320 @@ def _context_signal_state(row: pd.Series, tcga: Optional[str]) -> str:
     return "missing"
 
 
+def _best_seed_summary(row: pd.Series) -> Optional[str]:
+    best_seed = _first_present_value(row, ["seed_match_type", "best_seed_site_type", "best_seed_class"])
+    if not best_seed:
+        return None
+    best_seed = str(best_seed).strip()
+    if best_seed == "8mer":
+        return "seed match 8mer"
+    if best_seed == "7mer-m8":
+        return "seed match 7mer-m8"
+    if best_seed == "7mer-a1":
+        return "seed match 7mer-A1"
+    if best_seed == "6mer":
+        return "seed match 6mer"
+    return f"seed match {best_seed}"
+
+
+def _sequence_key_evidence(row: pd.Series) -> List[str]:
+    lines: List[str] = []
+    _append_line(lines, _best_seed_summary(row))
+
+    seed_pairing_score = _first_present_numeric(row, ["seed_pairing_score", "best_seed_rank"])
+    if np.isfinite(seed_pairing_score):
+        _append_line(
+            lines,
+            f"seed pairing score {seed_pairing_score:g}"
+            + _format_support_suffix(row, ["seed_pairing_score_percentile"]),
+        )
+
+    n_seed_sites = _first_present_numeric(row, ["n_seed_sites", "n_total_sites"])
+    if np.isfinite(n_seed_sites) and n_seed_sites > 0:
+        _append_line(
+            lines,
+            f"predicted seed sites {n_seed_sites:g}"
+            + _format_support_suffix(row, ["n_seed_sites_percentile"]),
+        )
+
+    if _as_int(row.get("is_8mer"), 0) == 1 and "seed match 8mer" not in lines:
+        _append_line(lines, "canonical 8mer site present")
+    return lines[:3]
+
+
+def _thermodynamic_key_evidence(row: pd.Series) -> List[str]:
+    lines: List[str] = []
+    mfe = _first_present_numeric(row, ["rnahybrid_mfe_best_site", "rnahybrid_mfe", "best_mfe"])
+    if np.isfinite(mfe):
+        _append_line(
+            lines,
+            f"RNAhybrid MFE {mfe:.3g} kcal/mol"
+            + _format_support_suffix(
+                row,
+                ["rnahybrid_mfe_best_site_percentile", "rnahybrid_mfe_percentile", "mfe_strength_percentile"],
+                ["more negative is stronger"],
+            ),
+        )
+
+    seed_mfe = _as_float(row.get("rnahybrid_seed_mfe"))
+    if np.isfinite(seed_mfe):
+        _append_line(
+            lines,
+            f"seed-region MFE {seed_mfe:.3g} kcal/mol"
+            + _format_support_suffix(row, ["rnahybrid_seed_mfe_percentile"], ["more negative is stronger"]),
+        )
+
+    strength = _first_present_numeric(row, ["rnahybrid_strength", "mfe_strength"])
+    if np.isfinite(strength):
+        _append_line(
+            lines,
+            f"duplex stability score {strength:g}"
+            + _format_support_suffix(row, ["rnahybrid_strength_percentile", "mfe_strength_percentile"]),
+        )
+    return lines[:3]
+
+
+def _conservation_key_evidence(row: pd.Series) -> List[str]:
+    lines: List[str] = []
+    context_score = _first_present_numeric(row, ["targetscan_context_score", "ts_best_contextpp"])
+    if np.isfinite(context_score):
+        _append_line(
+            lines,
+            f"TargetScan context score {context_score:.3g}"
+            + _format_support_suffix(
+                row,
+                [
+                    "targetscan_context_score_support_percentile",
+                    "targetscan_context_score_percentile",
+                    "ts_context_strength_percentile",
+                ],
+                ["more negative is stronger"],
+            ),
+        )
+
+    raw_percentile = _as_float(row.get("targetscan_context_score_percentile"))
+    if np.isfinite(raw_percentile):
+        _append_line(
+            lines,
+            f"TargetScan published percentile {raw_percentile:g}"
+            + _format_support_suffix(row, ["targetscan_context_score_percentile_percentile"]),
+        )
+
+    if _as_int(row.get("targetscan_conserved_site"), 0) == 1:
+        _append_line(lines, "TargetScan conserved site present")
+    return lines[:3]
+
+
+def _accessibility_key_evidence(row: pd.Series) -> List[str]:
+    lines: List[str] = []
+    best_seed_prob = _as_float(row.get("rnaplfold_best_seed_unpaired_prob"))
+    if np.isfinite(best_seed_prob):
+        _append_line(
+            lines,
+            f"best seed-region unpaired probability {best_seed_prob:.3g}"
+            + _format_support_suffix(row, ["rnaplfold_best_seed_unpaired_prob_percentile"]),
+        )
+
+    mean_site_prob = _as_float(row.get("rnaplfold_mean_site_unpaired_prob"))
+    if np.isfinite(mean_site_prob):
+        _append_line(
+            lines,
+            f"mean site unpaired probability {mean_site_prob:.3g}"
+            + _format_support_suffix(row, ["rnaplfold_mean_site_unpaired_prob_percentile"]),
+        )
+
+    accessible_sites = _as_float(row.get("rnaplfold_n_accessible_sites"))
+    if np.isfinite(accessible_sites) and accessible_sites > 0:
+        _append_line(
+            lines,
+            f"accessible sites scored {accessible_sites:g}"
+            + _format_support_suffix(row, ["rnaplfold_n_accessible_sites_percentile"]),
+        )
+    return lines[:3]
+
+
+def _binding_key_evidence(row: pd.Series) -> List[str]:
+    lines: List[str] = []
+    clip_max_score = _first_present_numeric(row, ["clip_max_score", "clip_exp_max"])
+    if np.isfinite(clip_max_score) and clip_max_score > 0:
+        _append_line(
+            lines,
+            f"CLIP max score {clip_max_score:g}"
+            + _format_support_suffix(row, ["clip_max_score_percentile", "clip_exp_max_percentile"]),
+        )
+
+    clip_n_experiments = _first_present_numeric(row, ["clip_n_experiments", "encori_clip_score", "clip_exp_sum"])
+    if np.isfinite(clip_n_experiments) and clip_n_experiments > 0:
+        _append_line(
+            lines,
+            f"CLIP-supported experiments {clip_n_experiments:g}"
+            + _format_support_suffix(row, ["clip_n_experiments_percentile", "encori_clip_score_percentile", "clip_exp_sum_percentile"]),
+        )
+
+    clip_n_cell_lines = _as_float(row.get("clip_n_cell_lines"))
+    if np.isfinite(clip_n_cell_lines) and clip_n_cell_lines > 0:
+        _append_line(
+            lines,
+            f"supporting cell lines {clip_n_cell_lines:g}"
+            + _format_support_suffix(row, ["clip_n_cell_lines_percentile"]),
+        )
+    return lines[:3]
+
+
+def _repression_key_evidence(row: pd.Series, tcga: Optional[str]) -> List[str]:
+    lines: List[str] = []
+
+    if tcga:
+        rho = _as_float(row.get(f"{tcga}_spearman_rho"))
+        if np.isfinite(rho):
+            direction_note = "more negative is stronger"
+            if rho < 0:
+                text = f"{tcga} Spearman rho {rho:.3g}"
+            else:
+                text = f"{tcga} Spearman rho {rho:.3g}"
+            _append_line(
+                lines,
+                text
+                + _format_support_suffix(
+                    row,
+                    [f"{tcga}_spearman_rho_percentile", f"{tcga}_anticorrelation_strength_percentile"],
+                    [direction_note],
+                ),
+            )
+        if _as_int(row.get(f"{tcga}_support_tcga"), 0) == 1 or _as_int(row.get(f"{tcga}_repression_evidence"), 0) == 1:
+            _append_line(lines, f"{tcga} repression support present")
+
+    supported_contexts = _as_float(row.get("tcga_n_supported_contexts"))
+    if np.isfinite(supported_contexts) and supported_contexts > 0:
+        _append_line(
+            lines,
+            f"supported TCGA contexts {supported_contexts:g}"
+            + _format_support_suffix(row, ["tcga_n_supported_contexts_percentile"]),
+        )
+
+    mean_rho = _as_float(row.get("tcga_mean_spearman_rho"))
+    if np.isfinite(mean_rho):
+        _append_line(
+            lines,
+            f"mean TCGA rho {mean_rho:.3g}"
+            + _format_support_suffix(row, ["tcga_mean_spearman_rho_percentile"], ["more negative is stronger"]),
+        )
+    return lines[:3]
+
+
+def _family_key_evidence(row: pd.Series, family: str, tcga: Optional[str]) -> List[str]:
+    if family == "sequence_complementarity":
+        return _sequence_key_evidence(row)
+    if family == "thermodynamic_stability":
+        return _thermodynamic_key_evidence(row)
+    if family == "sequence_conservation":
+        return _conservation_key_evidence(row)
+    if family == "target_site_accessibility":
+        return _accessibility_key_evidence(row)
+    if family == "functional_binding":
+        return _binding_key_evidence(row)
+    if family == "functional_repression":
+        return _repression_key_evidence(row, tcga)
+    return []
+
+
+def _family_available(row: pd.Series, family: str, key_evidence: List[str]) -> bool:
+    explicit = row.get(f"{family}_available")
+    if explicit is not None and not pd.isna(explicit):
+        return bool(explicit)
+
+    if family == "sequence_complementarity":
+        return bool(
+            key_evidence
+            or _as_int(row.get("has_seed_evidence"), 0) == 1
+            or _as_int(row.get("has_seed_features"), 0) == 1
+        )
+    if family == "thermodynamic_stability":
+        return bool(
+            key_evidence
+            or _as_int(row.get("has_rnahybrid_evidence"), 0) == 1
+            or _as_int(row.get("has_rnahybrid"), 0) == 1
+        )
+    if family == "sequence_conservation":
+        return bool(
+            key_evidence
+            or _as_int(row.get("has_targetscan_evidence"), 0) == 1
+            or _as_int(row.get("support_targetscan"), 0) == 1
+        )
+    if family == "target_site_accessibility":
+        return bool(key_evidence or _as_int(row.get("has_rnaplfold_evidence"), 0) == 1)
+    if family == "functional_binding":
+        return bool(
+            key_evidence
+            or _as_int(row.get("has_clip_evidence"), 0) == 1
+            or _as_int(row.get("support_encori"), 0) == 1
+        )
+    if family == "functional_repression":
+        return bool(
+            key_evidence
+            or _as_int(row.get("has_tcga_evidence"), 0) == 1
+            or _as_int(row.get("tcga_any_anticorrelated"), 0) == 1
+        )
+    return bool(key_evidence)
+
+
+def build_family_evidence_summary(row: pd.Series, tcga: Optional[str] = None) -> Dict[str, Dict[str, Any]]:
+    summary: Dict[str, Dict[str, Any]] = {}
+    for family, display_name in EVIDENCE_CATEGORY_LABELS.items():
+        key_evidence = _family_key_evidence(row, family, tcga)
+        support_percentile = _family_support_percentile(row, family)
+        available = _family_available(row, family, key_evidence)
+        evidence_count = _as_int(row.get(f"{family}_evidence_count"), len(key_evidence) if available else 0)
+        summary[family] = {
+            "label": display_name,
+            "available": bool(available),
+            "support_percentile": support_percentile if np.isfinite(support_percentile) else np.nan,
+            "key_evidence": key_evidence,
+            "evidence_count": evidence_count,
+        }
+    return summary
+
+
 def _compute_priority_fields(
     row: pd.Series,
     tcga: Optional[str],
-    evidence_categories: Dict[str, bool],
-    evidence_support_count: int,
+    family_summary: Dict[str, Dict[str, Any]],
 ) -> Dict[str, str]:
     context_state = _context_signal_state(row, tcga)
-    high_strength = _has_high_strength_signal(row)
-    very_strong = _has_very_strong_signal(row)
-    has_curated = bool(evidence_categories.get("curated_validation"))
-    has_model = bool(evidence_categories.get("mirdb_model") or evidence_categories.get("targetscan_model"))
-    has_binding = bool(evidence_categories.get("clip_binding"))
+    available_families = [info for info in family_summary.values() if info["available"]]
+    family_count = len(available_families)
+    support_values = [float(info["support_percentile"]) for info in available_families if np.isfinite(info["support_percentile"])]
+    overall_support = float(np.mean(support_values)) if support_values else np.nan
+    binding_or_sequence = any(
+        family_summary[name]["available"]
+        for name in ("sequence_complementarity", "sequence_conservation", "functional_binding")
+    )
 
-    if context_state == "not_supportive" and (has_model or has_binding or has_curated):
+    if context_state == "not_supportive" and binding_or_sequence:
         overall_priority = "Conflicting context"
         context_strength = "Not supportive"
-        strength_tier = "Moderate" if high_strength else "Weak"
-        summary = "strong model or binding support, but the requested cancer-context evidence is not supportive"
-    elif tcga and context_state == "missing" and (has_model or has_binding):
+        strength_tier = "Moderate" if family_count >= 2 else "Weak"
+        summary = "stronger sequence or binding support is present, but the requested cancer-context repression signal is not supportive"
+    elif tcga and context_state == "missing" and binding_or_sequence:
         overall_priority = "Context-limited"
         context_strength = "Unavailable"
-        strength_tier = "Moderate" if high_strength else "Weak"
-        summary = "model or binding support is present, but context-specific evidence is limited"
-    elif has_curated or (very_strong and evidence_support_count >= 3 and (has_binding or evidence_categories.get("tcga_context"))):
+        strength_tier = "Moderate" if family_count >= 3 else "Weak"
+        summary = "support is present outside the requested cancer context, but context-specific repression evidence is limited"
+    elif family_count >= 4 and np.isfinite(overall_support) and overall_support >= 75:
         overall_priority = "Strong"
         context_strength = "Supportive" if context_state == "supportive" else "Not requested"
         strength_tier = "Strong"
-        summary = "broad support with strong values across key evidence categories"
-    elif evidence_support_count >= 3 and high_strength:
+        summary = "broad support is present across the evidence families, with strong percentile support in the available signals"
+    elif family_count >= 3 and (not np.isfinite(overall_support) or overall_support >= 60):
         overall_priority = "Moderate"
         context_strength = "Supportive" if context_state == "supportive" else ("Unavailable" if context_state == "missing" else "Not requested")
-        strength_tier = "Strong"
-        summary = "fewer categories than the top tier, but stronger values in the available evidence"
-    elif evidence_support_count >= 4:
+        strength_tier = "Strong" if np.isfinite(overall_support) and overall_support >= 70 else "Moderate"
+        summary = "multiple evidence families support the interaction, with interpretable percentile support for the available metrics"
+    elif family_count >= 2:
         overall_priority = "Exploratory"
         context_strength = "Supportive" if context_state == "supportive" else ("Unavailable" if context_state == "missing" else "Not requested")
-        strength_tier = "Moderate"
-        summary = "broad support across categories, but most values are weak or typical"
-    elif evidence_support_count >= 2:
-        overall_priority = "Exploratory"
-        context_strength = "Supportive" if context_state == "supportive" else ("Unavailable" if context_state == "missing" else "Not requested")
-        strength_tier = "Moderate" if high_strength else "Weak"
-        summary = "some support is present, but the evidence remains exploratory"
+        strength_tier = "Moderate" if np.isfinite(overall_support) and overall_support >= 60 else "Weak"
+        summary = "some support is present, but the evidence remains exploratory because breadth or strength is limited"
     else:
         overall_priority = "Weak/context-limited"
         context_strength = "Supportive" if context_state == "supportive" else ("Unavailable" if context_state == "missing" else "Not requested")
@@ -240,257 +563,126 @@ def _compute_priority_fields(
 
 def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[str, Any]:
     allow_mirtarbase = use_mirtarbase_evidence()
-    target_evidence: List[str] = []
-    published_model_evidence: List[str] = []
-    clip_binding_evidence: List[str] = []
-    seed_site_evidence: List[str] = []
-    structure_evidence: List[str] = []
-    tcga_context_evidence: List[str] = []
+    family_summary = build_family_evidence_summary(row, tcga=tcga)
+    evidence_categories = {family: bool(info["available"]) for family, info in family_summary.items()}
+    evidence_categories_present = [
+        info["label"] for info in family_summary.values() if info["available"]
+    ]
+    evidence_support_count = _as_int(
+        row.get("evidence_family_count"),
+        sum(1 for info in family_summary.values() if info["available"]),
+    )
+    support_count = _as_int(row.get("support_count"), evidence_support_count)
+    overall_evidence_support_percentile = _as_float(row.get("overall_evidence_support_percentile"))
+    if not np.isfinite(overall_evidence_support_percentile):
+        support_values = [
+            float(info["support_percentile"])
+            for info in family_summary.values()
+            if np.isfinite(info["support_percentile"])
+        ]
+        overall_evidence_support_percentile = float(np.mean(support_values)) if support_values else np.nan
+
+    pathway_names: List[str] = []
     pathway_evidence: List[str] = []
-    strongest_features: List[str] = []
+    if _as_int(row.get("pathway_selected_gene"), 0) == 1:
+        pathway_names = _as_list(row.get("pathway_selected_names"))[:6]
+        if pathway_names:
+            pathway_evidence.append("Retained by strict pathway filter: " + "; ".join(pathway_names))
+        else:
+            pathway_evidence.append("Retained by strict pathway filter")
+
     caveats: List[str] = []
-    primary_evidence_by_category: Dict[str, Optional[str]] = {
-        "curated": None,
-        "mirdb": None,
-        "targetscan": None,
-        "clip": None,
-        "seed_site": None,
-        "structure": None,
-        "tcga": None,
-        "pathway": None,
-    }
+    if family_summary["functional_binding"]["available"]:
+        caveats.append("Binding evidence supports physical association, not necessarily functional repression")
+    if family_summary["thermodynamic_stability"]["available"]:
+        caveats.append("Thermodynamic stability is computational support, not structural confirmation")
+    if family_summary["functional_repression"]["available"]:
+        caveats.append("TCGA correlation is context evidence, not direct binding evidence")
 
-    support_count = _as_int(row.get("support_count"), 0)
-    evidence_categories: Dict[str, bool] = {
-        "curated_validation": False,
-        "mirdb_model": False,
-        "targetscan_model": False,
-        "clip_binding": False,
-        "seed_site": False,
-        "structure_rnahybrid": False,
-        "tcga_context": False,
-        "pathway_membership": False,
-    }
-
+    curated_evidence = None
     if allow_mirtarbase and (
         _as_int(row.get("mirtarbase_pos"), 0) == 1 or _as_int(row.get("label_mirtarbase"), 0) == 1
     ):
-        curated_line = "miRTarBase functional interaction present"
-        target_evidence.append(curated_line)
-        primary_evidence_by_category["curated"] = curated_line
-        evidence_categories["curated_validation"] = True
-    elif allow_mirtarbase:
-        caveats.append("No curated miRTarBase functional validation in this record")
+        curated_evidence = "Curated prior interaction support present in source data"
+        caveats.append("Curated prior evidence is background support and is not one of the six family summaries")
 
-    mirdb_score = _as_float(row.get("mirdb_best_score"))
-    if _as_int(row.get("support_mirdb"), 0) == 1:
-        evidence_categories["mirdb_model"] = True
-    if np.isfinite(mirdb_score):
-        support_label = _mirdb_label(mirdb_score).replace("miRDB support", "model support")
-        mirdb_line = f"miRDB score {mirdb_score:g}{_annotation_suffix(row, 'mirdb_best_score', [support_label])}"
-        published_model_evidence.append(mirdb_line)
-        primary_evidence_by_category["mirdb"] = mirdb_line
-        strongest_features.append(mirdb_line)
-        if mirdb_score >= 60 or _as_int(row.get("support_mirdb"), 0) == 1:
-            evidence_categories["mirdb_model"] = True
-    elif _as_float(row.get("mirdb_mean_score")) >= 60:
-        mirdb_mean = _as_float(row.get("mirdb_mean_score"))
-        support_label = _mirdb_label(mirdb_mean).replace("miRDB support", "model support")
-        mirdb_line = f"miRDB score {mirdb_mean:g}{_annotation_suffix(row, 'mirdb_mean_score', [support_label])}"
-        published_model_evidence.append(mirdb_line)
-        primary_evidence_by_category["mirdb"] = mirdb_line
-        strongest_features.append(mirdb_line)
-        evidence_categories["mirdb_model"] = True
+    primary_evidence_by_category = {
+        "curated": curated_evidence,
+        "mirdb": None,
+        "targetscan": family_summary["sequence_conservation"]["key_evidence"][0]
+        if family_summary["sequence_conservation"]["key_evidence"]
+        else None,
+        "clip": family_summary["functional_binding"]["key_evidence"][0]
+        if family_summary["functional_binding"]["key_evidence"]
+        else None,
+        "seed_site": family_summary["sequence_complementarity"]["key_evidence"][0]
+        if family_summary["sequence_complementarity"]["key_evidence"]
+        else None,
+        "structure": family_summary["thermodynamic_stability"]["key_evidence"][0]
+        if family_summary["thermodynamic_stability"]["key_evidence"]
+        else None,
+        "tcga": family_summary["functional_repression"]["key_evidence"][0]
+        if family_summary["functional_repression"]["key_evidence"]
+        else None,
+        "pathway": pathway_evidence[0] if pathway_evidence else None,
+    }
 
-    ts_strength = _as_float(row.get("ts_context_strength"))
-    ts_best_contextpp = _as_float(row.get("ts_best_contextpp"))
-    if np.isfinite(ts_best_contextpp):
-        targetscan_line = (
-            f"TargetScan context++ {ts_best_contextpp:.3f}"
-            f"{_annotation_suffix(row, 'ts_context_strength', ['more negative is stronger'])}"
-        )
-        published_model_evidence.append(targetscan_line)
-        primary_evidence_by_category["targetscan"] = targetscan_line
-        strongest_features.append(targetscan_line)
-        evidence_categories["targetscan_model"] = True
-    elif np.isfinite(ts_strength):
-        targetscan_line = (
-            f"TargetScan context strength {ts_strength:g}"
-            f"{_annotation_suffix(row, 'ts_context_strength')}"
-        )
-        published_model_evidence.append(targetscan_line)
-        primary_evidence_by_category["targetscan"] = targetscan_line
-        strongest_features.append(targetscan_line)
-        evidence_categories["targetscan_model"] = True
-    elif np.isfinite(_as_float(row.get("ts_best_percentile"))):
-        targetscan_line = f"TargetScan best-site percentile {float(row.get('ts_best_percentile')):g}{_annotation_suffix(row, 'ts_best_percentile')}"
-        published_model_evidence.append(targetscan_line)
-        primary_evidence_by_category["targetscan"] = targetscan_line
-        strongest_features.append(targetscan_line)
-        evidence_categories["targetscan_model"] = True
-    if _as_int(row.get("support_targetscan"), 0) == 1:
-        evidence_categories["targetscan_model"] = True
-
-    clip_sites = _as_int(row.get("n_clip_sites"), 0)
-    clip_sum = _as_float(row.get("clip_exp_sum"))
-    clip_max = _as_float(row.get("clip_exp_max"))
-    if clip_sites > 0 or np.isfinite(clip_sum) and clip_sum > 0 or np.isfinite(clip_max) and clip_max > 0 or _as_int(row.get("support_encori"), 0) == 1:
-        evidence_categories["clip_binding"] = True
-        clip_line = None
-        if np.isfinite(clip_sum) and clip_sum > 0:
-            clip_line = f"CLIP signal {clip_sum:g}{_annotation_suffix(row, 'clip_exp_sum')}"
-        elif clip_sites > 0:
-            clip_line = f"CLIP sites {clip_sites:.0f}{_annotation_suffix(row, 'n_clip_sites')}"
-        elif np.isfinite(clip_max) and clip_max > 0:
-            clip_line = f"CLIP signal {clip_max:g}{_annotation_suffix(row, 'clip_exp_max')}"
-        if clip_line:
-            clip_binding_evidence.append(clip_line)
-            primary_evidence_by_category["clip"] = clip_line
-            strongest_features.append(clip_line)
-        caveats.append("CLIP supports binding potential, not necessarily functional repression")
-
-    seed_summary = _best_seed_summary(row)
-    total_sites = _as_int(row.get("n_total_sites"), 0)
-    if seed_summary or total_sites > 0 or _as_int(row.get("has_seed_features"), 0) == 1:
-        evidence_categories["seed_site"] = True
-        seed_parts: List[str] = []
-        if seed_summary:
-            seed_parts.append(seed_summary)
-        if total_sites > 0:
-            seed_parts.append(f"total predicted sites {total_sites}")
-        if seed_parts:
-            seed_line = "; ".join(seed_parts)
-            seed_site_evidence.append(seed_line)
-            primary_evidence_by_category["seed_site"] = seed_line
-            strongest_features.append(seed_line)
-
-    has_structure_signal = (
-        _as_int(row.get("has_rnahybrid"), 0) == 1
-        or _as_int(row.get("n_rnahybrid_sites"), 0) > 0
-        or np.isfinite(_as_float(row.get("mfe_strength")))
-        or np.isfinite(_as_float(row.get("best_mfe")))
-        or _as_int(row.get("n_sites_mfe_lt_-20"), 0) > 0
-        or _as_int(row.get("n_sites_mfe_lt_-25"), 0) > 0
-    )
-    if has_structure_signal:
-        evidence_categories["structure_rnahybrid"] = True
-        best_mfe = _as_float(row.get("best_mfe"))
-        mfe_strength = _as_float(row.get("mfe_strength"))
-        structure_line = None
-        if np.isfinite(best_mfe):
-            structure_line = f"RNAhybrid best MFE {best_mfe:.1f} kcal/mol"
-            if np.isfinite(mfe_strength):
-                structure_line += _annotation_suffix(row, "mfe_strength")
-        elif np.isfinite(mfe_strength):
-            structure_line = f"RNAhybrid mfe strength {mfe_strength:g}{_annotation_suffix(row, 'mfe_strength')}"
-        elif _as_int(row.get("n_rnahybrid_sites"), 0) > 0:
-            sites = _as_int(row.get("n_rnahybrid_sites"), 0)
-            structure_line = f"RNAhybrid sites {sites:.0f}{_annotation_suffix(row, 'n_rnahybrid_sites')}"
-        elif _as_int(row.get("has_rnahybrid"), 0) == 1:
-            structure_line = "RNAhybrid support present"
-        if structure_line:
-            structure_evidence.append(structure_line)
-            primary_evidence_by_category["structure"] = structure_line
-            strongest_features.append(structure_line)
-        caveats.append("Structure evidence reflects predicted duplex stability, not structural confirmation")
-
-    if tcga:
-        rho_col = f"{tcga}_spearman_rho"
-        support_col = f"{tcga}_support_tcga"
-        rho = _as_float(row.get(rho_col))
-        support_tcga = _as_int(row.get(support_col), 0)
-        tcga_bits: List[str] = []
-        if np.isfinite(rho):
-            if rho < 0:
-                tcga_bits.append(f"{tcga} rho {rho:.3f}, consistent with repression")
-            else:
-                tcga_bits.append(f"{tcga} rho {rho:.3f}, not supportive of repression in this context")
-        if support_tcga == 1:
-            tcga_bits.append(f"{tcga} repression support present")
-            evidence_categories["tcga_context"] = True
-        if np.isfinite(rho) and rho < 0:
-            evidence_categories["tcga_context"] = True
-        if _as_int(row.get(f"{tcga}_repression_evidence"), 0) == 1:
-            tcga_bits.append(f"{tcga} repression support present")
-            evidence_categories["tcga_context"] = True
-        if tcga_bits:
-            tcga_line = "; ".join(_dedupe_keep_order(tcga_bits))
-            tcga_context_evidence.append(tcga_line)
-            primary_evidence_by_category["tcga"] = tcga_line
-            strongest_features.append(tcga_line)
-        caveats.append("TCGA correlation is context evidence, not direct binding evidence")
-
-    pathway_names: List[str] = []
-    if _as_int(row.get("pathway_selected_gene"), 0) == 1:
-        pathway_names = _as_list(row.get("pathway_selected_names"))
-        evidence_categories["pathway_membership"] = True
-        if pathway_names:
-            pathway_line = "Retained by strict pathway filter: " + "; ".join(pathway_names[:6])
-            pathway_evidence.append(pathway_line)
-            primary_evidence_by_category["pathway"] = pathway_line
-            strongest_features.append(pathway_line)
-        else:
-            pathway_line = "Retained by strict pathway filter"
-            pathway_evidence.append(pathway_line)
-            primary_evidence_by_category["pathway"] = pathway_line
-            strongest_features.append(pathway_line)
-
-    published_model_evidence = _dedupe_keep_order(published_model_evidence)
-    clip_binding_evidence = _dedupe_keep_order(clip_binding_evidence)
-    seed_site_evidence = _dedupe_keep_order(seed_site_evidence)
-    structure_evidence = _dedupe_keep_order(structure_evidence)
-    tcga_context_evidence = _dedupe_keep_order(tcga_context_evidence)
-    pathway_evidence = _dedupe_keep_order(pathway_evidence)
-    caveats = _dedupe_keep_order(caveats)
+    strongest_features: List[str] = []
+    for family in EVIDENCE_CATEGORY_LABELS:
+        strongest_features.extend(family_summary[family]["key_evidence"][:1])
+    strongest_features.extend(pathway_evidence[:1])
     strongest_features = _dedupe_keep_order(strongest_features)
+    caveats = _dedupe_keep_order(caveats)
 
     raw_key_values: Dict[str, Any] = {}
     raw_keys = [
         "support_count",
-        "mirdb_best_score",
-        "mirdb_mean_score",
-        "ts_context_strength",
-        "ts_best_contextpp",
-        "ts_best_percentile",
-        "n_clip_sites",
-        "clip_exp_sum",
-        "clip_exp_max",
-        "best_seed_class",
-        "n_total_sites",
-        "site_density_per_kb",
-        "best_local_au",
-        "n_rnahybrid_sites",
-        "best_mfe",
-        "mfe_strength",
-        "mean_top3_mfe_strength",
-        "n_sites_mfe_lt_-20",
-        "n_sites_mfe_lt_-25",
-        "best_local_au_by_mfe",
+        "overall_evidence_support_percentile",
+        "evidence_family_count",
+        "seed_pairing_score",
+        "n_seed_sites",
+        "rnahybrid_mfe",
+        "rnahybrid_mfe_best_site",
+        "rnahybrid_seed_mfe",
+        "rnahybrid_strength",
+        "targetscan_context_score",
+        "targetscan_context_score_percentile",
+        "targetscan_context_score_support_percentile",
+        "targetscan_aggregate_context_score",
+        "clip_max_score",
+        "clip_n_experiments",
+        "clip_n_cell_lines",
+        "encori_clip_score",
+        "rnaplfold_best_seed_unpaired_prob",
+        "rnaplfold_mean_site_unpaired_prob",
+        "rnaplfold_n_accessible_sites",
+        "tcga_n_supported_contexts",
+        "tcga_mean_spearman_rho",
         "pathway_selected_gene",
     ]
     if tcga:
-        raw_keys.extend([f"{tcga}_spearman_rho", f"{tcga}_support_tcga", f"{tcga}_anticorrelation_strength"])
+        raw_keys.extend([f"{tcga}_spearman_rho", f"{tcga}_support_tcga", f"{tcga}_repression_evidence"])
     for key in raw_keys:
         value = _raw_value_if_present(row, key)
         if value is not None:
             raw_key_values[key] = value
 
-    evidence_categories_present = [
-        label for key, label in EVIDENCE_CATEGORY_LABELS.items() if evidence_categories.get(key)
-    ]
-    evidence_support_count = int(sum(1 for present in evidence_categories.values() if present))
-    priority_fields = _compute_priority_fields(row, tcga, evidence_categories, evidence_support_count)
+    priority_fields = _compute_priority_fields(row, tcga, family_summary)
 
     sections = {
         "support_count": support_count,
         "evidence_categories": evidence_categories,
         "evidence_categories_present": evidence_categories_present,
+        "evidence_families_present": evidence_categories_present,
         "evidence_support_count": evidence_support_count,
+        "evidence_family_count": evidence_support_count,
+        "overall_evidence_support_percentile": overall_evidence_support_percentile,
         "evidence_strength_summary": priority_fields["evidence_strength_summary"],
         "evidence_strength_tier": priority_fields["evidence_strength_tier"],
         "context_strength_tier": priority_fields["context_strength_tier"],
         "overall_priority_tier": priority_fields["overall_priority_tier"],
         "number_of_features_supporting_interaction": evidence_support_count,
+        "family_evidence_summary": family_summary,
         "primary_curated_evidence": primary_evidence_by_category["curated"],
         "primary_mirdb_evidence": primary_evidence_by_category["mirdb"],
         "primary_targetscan_evidence": primary_evidence_by_category["targetscan"],
@@ -499,14 +691,14 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
         "primary_structure_evidence": primary_evidence_by_category["structure"],
         "primary_tcga_evidence": primary_evidence_by_category["tcga"],
         "primary_pathway_evidence": primary_evidence_by_category["pathway"],
-        "target_evidence": target_evidence,
-        "published_model_evidence": published_model_evidence,
-        "clip_binding_evidence": clip_binding_evidence,
-        "seed_site_evidence": seed_site_evidence,
-        "structure_evidence": structure_evidence,
-        "tcga_context_evidence": tcga_context_evidence,
+        "target_evidence": [curated_evidence] if curated_evidence else [],
+        "published_model_evidence": family_summary["sequence_conservation"]["key_evidence"],
+        "clip_binding_evidence": family_summary["functional_binding"]["key_evidence"],
+        "seed_site_evidence": family_summary["sequence_complementarity"]["key_evidence"],
+        "structure_evidence": family_summary["thermodynamic_stability"]["key_evidence"],
+        "tcga_context_evidence": family_summary["functional_repression"]["key_evidence"],
         "pathway_evidence": pathway_evidence,
-        "pathway_names": pathway_names[:6],
+        "pathway_names": pathway_names,
         "strongest_features": strongest_features[:8],
         "caveats": caveats,
         "raw_key_values": raw_key_values,

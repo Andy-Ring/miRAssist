@@ -32,9 +32,9 @@ class UIContentTests(unittest.TestCase):
 
     def test_about_evidence_section_lists_core_sources(self) -> None:
         text = get_about_evidence_markdown()
-        self.assertIn("miRTarBase", text)
-        self.assertIn("TargetScan", text)
-        self.assertIn("CLIP", text)
+        self.assertIn("Sequence complementarity", text)
+        self.assertIn("Sequence conservation", text)
+        self.assertIn("Functional binding", text)
         self.assertIn("Pathway filter", text)
 
 

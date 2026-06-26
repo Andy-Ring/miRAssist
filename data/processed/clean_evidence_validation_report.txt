@@ -1,0 +1,149 @@
+miRAssist Clean Evidence Validation Report
+============================================
+Source path: C:\Users\andym\OneDrive - University of Georgia\Documents\miRAssist\data\processed\mirassist_backend_features.parquet
+Discovered input files: C:\Users\andym\OneDrive - University of Georgia\Documents\miRAssist\data\processed\mirassist_backend_features.parquet, C:\Users\andym\OneDrive - University of Georgia\Documents\miRAssist\data\processed\evidence_interactions.parquet
+Unit of analysis: transcript-level miRNA-target candidate
+RNAplfold handling: site-level RNAplfold rows are aggregated to transcript-level summaries using arithmetic means and best-site maxima
+Rows: 577118
+Unique miRNAs: 2631
+Unique genes: 14565
+Unique miRNA-gene pairs: 577115
+
+Discovered source columns:
+- mirna_name
+- gene_symbol
+- mirna_name_norm
+- gene_symbol_norm
+- transcript_id
+- label_mirtarbase
+- mirtarbase_pos
+- ts_best_contextpp
+- ts_best_percentile
+- ts_context_strength
+- mirdb_best_score
+- mirdb_mean_score
+- clip_exp_sum
+- clip_exp_max
+- n_clip_sites
+- BRCA_spearman_rho
+- COAD_spearman_rho
+- PRAD_spearman_rho
+- BRCA_repression_evidence
+- COAD_repression_evidence
+- PRAD_repression_evidence
+- has_seed_features
+- best_seed_rank
+- n_sites_6mer
+- n_sites_7mer_a1
+- n_sites_7mer_m8
+- n_sites_8mer
+- n_total_sites
+- site_density_per_kb
+- best_local_au
+- has_rnahybrid
+- n_rnahybrid_sites
+- best_mfe
+- mfe_strength
+- mean_top3_mfe
+- mean_top3_mfe_strength
+- best_8mer_mfe
+- best_7mer_m8_mfe
+- n_sites_mfe_lt_-20
+- n_sites_mfe_lt_-25
+- best_site_class_by_mfe
+- best_site_start_by_mfe
+- best_site_end_by_mfe
+- best_local_au_by_mfe
+- score_evidence_placeholder
+- score_structure_placeholder
+- score_combined_placeholder
+- utr_len
+- best_seed_class
+- best_site_start
+- best_site_end
+- mirna_name_normalized
+- gene_symbol_normalized
+
+Missingness by evidence category:
+seed_region:
+  seed_match_type: 0.036
+  n_seed_sites: 0.000
+  best_seed_site_type: 0.036
+rnahybrid:
+  rnahybrid_mfe: 0.470
+  rnahybrid_site_start: 0.470
+  rnahybrid_site_end: 0.470
+targetscan:
+  targetscan_context_score: 0.883
+  targetscan_context_score_percentile: 0.883
+  targetscan_aggregate_context_score: 1.000
+rnaplfold:
+  rnaplfold_best_seed_unpaired_prob: 1.000
+  rnaplfold_mean_seed_unpaired_prob: 1.000
+  rnaplfold_best_site_unpaired_prob: 1.000
+  rnaplfold_mean_site_unpaired_prob: 1.000
+  rnaplfold_best_flank_unpaired_prob: 1.000
+  rnaplfold_mean_flank_unpaired_prob: 1.000
+  rnaplfold_n_sites_scored: 1.000
+  rnaplfold_n_accessible_sites: 1.000
+clip:
+  clip_any_support: 0.000
+  clip_max_score: 0.472
+  encori_clip_score: 0.472
+tcga:
+  BRCA_spearman_rho: 0.181
+  PRAD_spearman_rho: 0.182
+  COAD_spearman_rho: 0.178
+  tcga_n_supported_contexts: 0.000
+
+Numeric evidence summaries:
+- seed_pairing_score: min=0, p25=1, median=3, mean=2.222, p75=3, max=4
+- n_seed_sites: min=0, p25=1, median=3, mean=3.907, p75=5, max=207
+- rnahybrid_mfe: min=-54.4, p25=-25.9, median=-22, mean=-22.59, p75=-18.7, max=-7.1
+- rnahybrid_strength: min=7.1, p25=18.7, median=22, mean=22.59, p75=25.9, max=54.4
+- targetscan_context_score: min=-1.572, p25=-0.302, median=-0.212, mean=-0.2251, p75=-0.13, max=-0.01
+- targetscan_context_score_percentile: min=9, p25=81, median=91, mean=85.56, p75=96, max=99
+- clip_max_score: min=0, p25=1, median=2, mean=3.788, p75=4, max=274
+- clip_n_experiments: min=0, p25=1, median=2, mean=4.589, p75=5, max=392
+- BRCA_spearman_rho: min=-0.3607, p25=-0.05762, median=-0.009819, mean=-0.00817, p75=0.03852, max=0.9126
+- PRAD_spearman_rho: min=-0.5938, p25=-0.1063, median=0.0321, mean=0.0407, p75=0.1753, max=0.7068
+- COAD_spearman_rho: min=-0.6716, p25=-0.09015, median=-0.008805, mean=0.009061, p75=0.08791, max=0.7955
+- tcga_n_supported_contexts: min=0, p25=0, median=1, mean=1.247, p75=2, max=3
+- tcga_mean_spearman_rho: min=-0.472, p25=-0.05998, median=0.003893, mean=0.01342, p75=0.07742, max=0.5972
+
+Evidence-family presence summary:
+- has_seed_evidence: 556572 rows (96.4%)
+- has_rnahybrid_evidence: 305909 rows (53.0%)
+- has_targetscan_evidence: 67432 rows (11.7%)
+- has_rnaplfold_evidence: 0 rows (0.0%)
+- has_clip_evidence: 304501 rows (52.8%)
+- has_tcga_evidence: 477038 rows (82.7%)
+
+Evidence-family completeness summary:
+- 0 families present: 7000 rows (1.2%)
+- 1 families present: 36686 rows (6.4%)
+- 2 families present: 124260 rows (21.5%)
+- 3 families present: 255692 rows (44.3%)
+- 4 families present: 108230 rows (18.8%)
+- 5 families present: 45250 rows (7.8%)
+- 6 families present: 0 rows (0.0%)
+
+Supported row counts by evidence family:
+- seed_support_rows: 556572
+- rnahybrid_support_rows: 305909
+- targetscan_support_rows: 67432
+- rnaplfold_support_rows: 0
+- clip_support_rows: 304501
+- tcga_support_rows: 477038
+
+RNAplfold join diagnostics:
+- join_keys: []
+- input_level: unknown
+- output_level: unknown
+- feature_rows: 0
+- joined_rows_with_signal: 0
+- accessible_threshold: 0.5
+- aggregation: n/a
+
+Leakage-column validation: PASS
+Confirmation that no miRTarBase evidence columns are present: PASS

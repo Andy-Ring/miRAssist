@@ -14,7 +14,7 @@ def get_normal_debug_sections() -> list[str]:
 
 def get_how_to_use_markdown() -> str:
     return """
-miRAssist prioritizes candidate miRNA-target interactions using curated evidence, published prediction models, CLIP/binding evidence, seed/site features, structure-aware features, TCGA context, and pathway filtering.
+miRAssist prioritizes candidate miRNA-target interactions using six major evidence families: sequence complementarity, thermodynamic stability, sequence conservation, target site accessibility, functional binding, and functional repression.
 
 Example query types:
 - miRNA to targets: `What genes are regulated by hsa-miR-210-3p?`
@@ -37,25 +37,26 @@ How cancer context works:
 How to interpret results:
 - `k` is the number of evidence cards/candidates passed to the synthesizer after backend filtering and scoring.
 - By default, miRAssist prints the top 5 ranked results from that candidate pool.
-- Evidence support count = number of distinct evidence categories, not number of raw features.
+- Evidence support count = number of distinct evidence families, not number of raw features.
 - Evidence support count measures breadth, not strength.
-- Percentiles show whether a feature is unusually high across the database.
-- miRTarBase is curated prior evidence.
+- Percentiles show whether a feature or family signal is unusually strong across the database.
+- More negative RNAhybrid MFE means stronger predicted binding.
+- More negative TargetScan context score means stronger sequence-conservation support.
+- More negative TCGA Spearman rho means stronger repression-consistent anticorrelation.
 - Overall priority considers both evidence breadth and evidence strength.
 
 Novel mode:
-- Novel mode excludes known miRTarBase functional interactions from the ranked list.
+- Novel mode excludes known curated interactions when that filter is available in the backend.
 """.strip()
 
 
 def get_about_evidence_markdown() -> str:
     return """
-- `miRTarBase`: curated prior functional evidence
-- `miRDB`: expression-based published model; high score = more likely interaction
-- `TargetScan`: sequence-based published model; lower score = more likely interaction
-- `CLIP`: binding-associated support
-- `Seed/site`: canonical site architecture support
-- `RNAhybrid/structure`: structure-compatible binding support
-- `TCGA`: cancer-context repression support
+- `Sequence complementarity`: seed match type, seed pairing score, and site-count support
+- `Thermodynamic stability`: RNAhybrid minimum free energy support; more negative is stronger
+- `Sequence conservation`: TargetScan context and conservation support; more negative context scores are stronger
+- `Target site accessibility`: RNAplfold accessibility support; higher unpaired probabilities are stronger
+- `Functional binding`: CLIP and ENCORI support for physical binding evidence
+- `Functional repression`: TCGA anticorrelation and repression-consistent context support
 - `Pathway filter`: deterministic pathway membership used as a strict filter
 """.strip()

@@ -80,7 +80,7 @@ def main() -> None:
 
     out_path = Path(args.out).resolve()
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest[
+    manifest_out = manifest[
         [
             "query_id",
             "mode",
@@ -97,7 +97,14 @@ def main() -> None:
             "label_positive_count",
             "n_candidate_rows",
         ]
-    ].to_csv(out_path, index=False)
+    ].copy()
+    suffix = out_path.suffix.lower()
+    if suffix == ".parquet":
+        manifest_out.to_parquet(out_path, index=False)
+    elif suffix in {".csv", ".txt", ""}:
+        manifest_out.to_csv(out_path, index=False)
+    else:
+        raise ValueError(f"Unsupported manifest output format {suffix!r}. Use .csv or .parquet.")
     print(f"Wrote {len(manifest)} evaluation queries to {out_path}")
 
 

@@ -25,17 +25,17 @@ Hard rules:
 - Do not invent pathway membership.
 - Do not infer pathway directionality unless the pathway name explicitly supports it.
 - Do not imply that the miRNA directly activates or induces target gene expression.
-- Do not calculate percentiles yourself; use the backend-provided labels and values.
-- Do not invent feature strengths; use only the backend-provided raw values and labels.
+- Do not calculate percentiles yourself; use the backend-provided raw values and support percentiles.
+- Do not invent feature strengths; use only the backend-provided raw values, support percentiles, and caveats.
 - Use the backend-provided evidence_support_count exactly as given.
-- Percentiles are interpretation labels for the associated feature, not separate evidence.
+- Percentiles are interpretation aids for the associated feature or evidence family, not separate evidence.
 - Do not count a raw feature and its percentile annotation separately.
-- Evidence support count is based on distinct evidence categories, not individual columns.
-- Use at most one primary metric per evidence category unless the card explicitly marks additional metrics as nonredundant.
+- Evidence support count is based on distinct evidence families, not individual columns.
+- Use at most one or two primary metrics per evidence family unless the card explicitly marks additional metrics as nonredundant.
 - Do not list best/mean/max variants of the same evidence type as separate key evidence unless the card makes that necessary.
 - Do not include low or absent evidence as a key evidence line unless it is an important caveat.
 - Evidence support count measures breadth, not strength.
-- A candidate with fewer categories may still be more compelling if those categories are strong.
+- A candidate with fewer evidence families may still be more compelling if those families are strong.
 - A candidate with more categories may still be exploratory if the values are weak or typical.
 - When explaining rankings, mention both evidence breadth and evidence strength.
 - Do not call a candidate "strongest" solely because it has more categories.
@@ -43,16 +43,20 @@ Hard rules:
 - Do not describe computational predictions as experimental validation.
 
 Evidence interpretation rules:
-- miRTarBase functional support is curated prior evidence, not automatic proof of the exact user context.
-- miRDB, TargetScan, seed features, RNAhybrid, and local AU are computational or structural support, not experimental validation.
-- ENCORI/CLIP supports binding evidence, not necessarily repression.
+- The six major evidence families are sequence complementarity, thermodynamic stability, sequence conservation, target site accessibility, functional binding, and functional repression.
+- More negative RNAhybrid MFE means stronger predicted binding support.
+- More negative TargetScan context score means stronger sequence-conservation support.
+- Higher accessibility probabilities mean the target region is more accessible.
+- Higher CLIP or ENCORI values mean stronger binding support.
+- More negative TCGA Spearman rho means stronger repression-consistent anticorrelation.
+- CLIP supports binding evidence, not necessarily repression.
 - TCGA context evidence is context-specific repression support, not direct binding evidence.
 - Pathway evidence only means the candidate passed the deterministic pathway filter or has explicit pathway names in the card.
 - If the backend provides a target-role interpretation, describe it as a candidate interpretation that is consistent with miRNA-mediated repression and grounded in pathway annotations.
 - Phrase directional context as "consistent with" or "candidate target interpretation", not as proof that the target gene caused the phenotype.
 
 Novel mode rules:
-- In novel mode, miRTarBase functional pairs must NOT appear in the ranked list.
+- In novel mode, known curated interactions excluded by the backend must NOT appear in the ranked list.
 - Known interactions may be mentioned only as background context, not as novel candidates.
 
 Required output format:
@@ -74,11 +78,11 @@ Required output format:
 
 ### 1. GENE_OR_MIRNA
 - **Overall priority:** Strong / Moderate / Exploratory / Context-limited / Conflicting context
-- **Evidence support count:** X categories
-- **Evidence categories:** miRTarBase; miRDB; TargetScan; CLIP; TCGA context; Pathway
+- **Evidence support count:** X families
+- **Evidence families:** sequence_complementarity; thermodynamic_stability; sequence_conservation; target_site_accessibility; functional_binding; functional_repression
 - **Pathways:** pathway names if pathway filtering was applied, otherwise "Not pathway-filtered"
 - **Key pieces of evidence:**
-  - grouped by evidence category, with one primary metric per category and percentiles treated only as modifiers
+  - grouped by evidence family, with one or two primary metrics per family and percentiles treated only as modifiers
 - **Interpretation:** 2-4 sentences grounded only in the evidence card, explicitly distinguishing evidence breadth from evidence strength
 
 ## Final recommendation
@@ -94,20 +98,8 @@ def get_system_prompt() -> str:
         return prompt
 
     prompt = prompt.replace(
-        "- miRTarBase functional support is curated prior evidence, not automatic proof of the exact user context.\n",
+        "- In novel mode, known curated interactions excluded by the backend must NOT appear in the ranked list.\n",
         "",
-    )
-    prompt = prompt.replace(
-        "- In novel mode, miRTarBase functional pairs must NOT appear in the ranked list.\n",
-        "",
-    )
-    prompt = prompt.replace(
-        "- Known interactions may be mentioned only as background context, not as novel candidates.\n",
-        "",
-    )
-    prompt = prompt.replace(
-        "- **Evidence categories:** miRTarBase; miRDB; TargetScan; CLIP; TCGA context; Pathway\n",
-        "- **Evidence categories:** miRDB; TargetScan; CLIP; TCGA context; Pathway\n",
     )
     return prompt
 
@@ -177,7 +169,7 @@ def build_user_prompt(
                 f"for {expected_role.replace('_', ' ')} genes in {phenotype}, not on invented gene memberships."
             )
     if novel:
-        ctx_lines.append("- Mode: NOVEL (exclude miRTarBase functional interactions from ranked list)")
+        ctx_lines.append("- Mode: NOVEL (known curated interactions excluded by the backend should not be ranked as novel)")
     if needs_clarification:
         ctx_lines.append(f"- Ambiguities noted by planner: {', '.join(needs_clarification)}")
     if retrieval_diagnostics.get("user_notes"):
@@ -199,16 +191,16 @@ Requirements:
 - Return EXACTLY {top_n} UNIQUE ranked {output_item} unless fewer than {top_n} candidates passed the filters.
 - Use only the evidence cards below; do not invent extra support.
 - Do not use unsupported intuition or external knowledge when ranking.
-- Use the backend-provided evidence support count, evidence categories, raw values, percentile labels, and caveats.
+- Use the backend-provided evidence support count, evidence families, raw values, support percentiles, and caveats.
 - Use the backend-provided evidence_support_count exactly as given.
-- Percentiles are interpretation labels for the associated feature, not separate evidence.
+- Percentiles are interpretation aids for the associated feature or family, not separate evidence.
 - Do not count raw values and percentiles separately.
-- Use at most one primary metric per evidence category unless the card explicitly marks additional metrics as nonredundant.
-- Keep "Key pieces of evidence" compact and grouped by category.
+- Use at most one or two primary metrics per evidence family unless the card explicitly marks additional metrics as nonredundant.
+- Keep "Key pieces of evidence" compact and grouped by family.
 - Evidence support count means breadth, not strength.
-- A candidate with fewer categories may still rank highly if those categories are strong.
+- A candidate with fewer evidence families may still rank highly if those families are strong.
 - A candidate with more categories may still be lower confidence if most values are weak or typical.
-- Do not invent percentiles, feature strength labels, pathway membership, or gene-phenotype links.
+- Do not invent percentiles, pathway membership, or gene-phenotype links.
 - Do not claim a candidate belongs to a pathway unless the card explicitly says it passed the pathway filter or names the pathways.
 - If directional phenotype logic is provided, explain it as a repression-consistent candidate-target interpretation rather than proof of causality.
 - Use the required output structure from the system prompt.
@@ -240,15 +232,8 @@ Evidence cards:
         if raw_key_values:
             raw_value_line = "; ".join(f"{key}={value}" for key, value in raw_key_values.items())
         pathway_names = card.get("pathway_names") or []
-        evidence_categories_present = card.get("evidence_categories_present") or []
-        primary_curated = card.get("primary_curated_evidence")
-        primary_mirdb = card.get("primary_mirdb_evidence")
-        primary_targetscan = card.get("primary_targetscan_evidence")
-        primary_clip = card.get("primary_clip_evidence")
-        primary_seed = card.get("primary_seed_evidence")
-        primary_structure = card.get("primary_structure_evidence")
-        primary_tcga = card.get("primary_tcga_evidence")
-        primary_pathway = card.get("primary_pathway_evidence")
+        evidence_categories_present = card.get("evidence_families_present") or card.get("evidence_categories_present") or []
+        family_summary = card.get("family_evidence_summary") or {}
         evidence_strength_summary = card.get("evidence_strength_summary") or "None"
         evidence_strength_tier = card.get("evidence_strength_tier") or "None"
         context_strength_tier = card.get("context_strength_tier") or "None"
@@ -259,24 +244,46 @@ Evidence cards:
             f"Gene: {card.get('gene_symbol', '')}",
             f"Support count: {card.get('support_count', 0)}",
             f"Overall priority: {overall_priority_tier}",
-            f"Evidence support count: {card.get('evidence_support_count', card.get('number_of_features_supporting_interaction', 0))} categories",
-            "Evidence categories: " + ("; ".join(evidence_categories_present) if evidence_categories_present else "None"),
+            f"Evidence support count: {card.get('evidence_family_count', card.get('evidence_support_count', card.get('number_of_features_supporting_interaction', 0)))} families",
+            "Evidence families: " + ("; ".join(evidence_categories_present) if evidence_categories_present else "None"),
+            "Overall evidence support percentile: "
+            + (
+                f"{float(card.get('overall_evidence_support_percentile')):.1f}"
+                if card.get("overall_evidence_support_percentile") is not None and not pd.isna(card.get("overall_evidence_support_percentile"))
+                else "Not available"
+            ),
             f"Evidence strength tier: {evidence_strength_tier}",
             f"Context strength tier: {context_strength_tier}",
             f"Evidence strength summary: {evidence_strength_summary}",
             "Pathways: " + ("; ".join(pathway_names) if pathway_names else "Not pathway-filtered"),
-            "Curated evidence: " + (primary_curated or "None"),
-            "miRDB evidence: " + (primary_mirdb or "None"),
-            "TargetScan evidence: " + (primary_targetscan or "None"),
-            "Binding evidence: " + (primary_clip or "None"),
-            "Seed/site evidence: " + (primary_seed or "None"),
-            "Structure evidence: " + (primary_structure or "None"),
-            "Context evidence: " + (primary_tcga or "None"),
-            "Pathway evidence: " + (primary_pathway or "Not pathway-filtered"),
             "Other evidence details: " + ("; ".join(card.get("strongest_features") or []) or "None"),
             "Raw key values: " + raw_value_line,
             "Caveats: " + ("; ".join(card.get("caveats") or []) or "None"),
         ]
+        for family_name in [
+            "sequence_complementarity",
+            "thermodynamic_stability",
+            "sequence_conservation",
+            "target_site_accessibility",
+            "functional_binding",
+            "functional_repression",
+        ]:
+            info = family_summary.get(family_name) or {}
+            key_evidence = info.get("key_evidence") or []
+            support_percentile = info.get("support_percentile")
+            block.append(
+                f"{family_name}: "
+                + (
+                    f"available={bool(info.get('available'))}; "
+                    + (
+                        f"support_percentile={float(support_percentile):.1f}; "
+                        if support_percentile is not None and not pd.isna(support_percentile)
+                        else "support_percentile=Not available; "
+                    )
+                    + ("key_evidence=" + "; ".join(key_evidence) if key_evidence else "key_evidence=None")
+                )
+            )
+        block.append("Pathway evidence: " + (card.get("primary_pathway_evidence") or "Not pathway-filtered"))
         if card.get("notes"):
             block.append(f"Notes: {card.get('notes')}")
         card_blocks.append("\n".join(block))

@@ -40,7 +40,10 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_manifest_row(path: Path, index: int | None, query_id: str | None) -> pd.Series:
-    manifest = pd.read_csv(path)
+    if path.suffix.lower() == ".parquet":
+        manifest = pd.read_parquet(path)
+    else:
+        manifest = pd.read_csv(path)
     if query_id:
         matches = manifest[manifest["query_id"].astype(str) == str(query_id)]
         if matches.empty:

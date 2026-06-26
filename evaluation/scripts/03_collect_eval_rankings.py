@@ -24,7 +24,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    labels_df = pd.read_parquet(Path(args.labels).resolve())
+    labels_path = Path(args.labels).resolve()
+    if labels_path.suffix.lower() == ".parquet":
+        labels_df = pd.read_parquet(labels_path)
+    else:
+        labels_df = pd.read_csv(labels_path)
     rankings_df, query_summary_df, collection_summary = collect_rankings_from_json(args.json_dir, labels_df)
 
     outdir = Path(args.outdir).resolve()
@@ -34,6 +38,7 @@ def main() -> None:
     rankings_df.to_csv(outdir / "rankings_long.csv", index=False)
     query_summary_df.to_parquet(outdir / "query_summary.parquet", index=False)
     query_summary_df.to_csv(outdir / "query_summary.csv", index=False)
+    json_dump(outdir / "label_join_diagnostics.json", collection_summary)
     json_dump(outdir / "collection_summary.json", collection_summary)
 
     print(f"Wrote rankings_long and query_summary tables to {outdir}")

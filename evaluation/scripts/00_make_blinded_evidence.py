@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import time
 
 import pandas as pd
 
@@ -34,12 +35,18 @@ def main() -> None:
     label_cols = [col.strip() for col in args.label_cols.split(",") if col.strip()]
 
     evidence_df = pd.read_parquet(evidence_path)
+    print(f"Input evidence shape: {evidence_df.shape}")
+    print(f"Held-out label columns: {label_cols}")
     blinded_df, heldout_df, audit = make_blinded_evidence(evidence_df, label_cols=label_cols)
+    print(f"Unique miRNA names: {audit.get('n_unique_mirna_names', 0)}")
+    print(f"Unique gene symbols: {audit.get('n_unique_gene_symbols', 0)}")
+    print(f"miRNA normalization time (s): {audit.get('mirna_normalization_seconds', 0.0):.3f}")
 
     blinded_path = outdir / "evidence_blinded_no_mirtarbase.parquet"
     labels_path = outdir / "heldout_mirtarbase_labels.parquet"
     audit_path = outdir / "blinding_audit.json"
 
+    write_started = time.perf_counter()
     blinded_df.to_parquet(blinded_path, index=False)
     heldout_df.to_parquet(labels_path, index=False)
 
@@ -48,7 +55,9 @@ def main() -> None:
     audit["label_output_path"] = str(labels_path)
     audit["blinded_output_sha256"] = hash_file(blinded_path)
     audit["label_output_sha256"] = hash_file(labels_path)
+    audit["write_outputs_seconds"] = time.perf_counter() - write_started
     json_dump(audit_path, audit)
+    print(f"Output write time (s): {audit['write_outputs_seconds']:.3f}")
 
     print(f"Wrote blinded evidence to {blinded_path}")
     print(f"Wrote held-out labels to {labels_path}")
