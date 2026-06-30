@@ -60,19 +60,6 @@ def _load_local_dotenv() -> None:
 _load_local_dotenv()
 
 
-def resolve_backend_url(default: str = "http://127.0.0.1:7861") -> str:
-    return _first_nonempty(
-        os.getenv("BACKEND_URL"),
-        os.getenv("MIRASSIST_BACKEND_URL"),
-        default,
-    ) or default
-
-
-def get_app_mode() -> str:
-    mode = (os.getenv("MIRASSIST_APP_MODE", "direct") or "direct").strip().lower()
-    return mode if mode in {"direct", "api"} else "direct"
-
-
 def get_database_url() -> str | None:
     return _first_nonempty(os.getenv("DATABASE_URL"))
 
@@ -88,11 +75,6 @@ def get_jobstore_backend() -> str:
     if requested == "postgres" and not database_configured():
         return "filesystem"
     return requested
-
-
-def get_worker_mode() -> str:
-    mode = (os.getenv("WORKER_MODE", "subprocess") or "subprocess").strip().lower()
-    return mode if mode in {"subprocess", "inline"} else "subprocess"
 
 
 def get_evidence_backend() -> str:

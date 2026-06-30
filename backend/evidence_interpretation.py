@@ -33,7 +33,6 @@ FAMILY_PERCENTILE_COLUMNS: Dict[str, List[str]] = {
     "sequence_conservation": [
         "sequence_conservation_support_percentile",
         "targetscan_context_score_support_percentile",
-        "targetscan_context_score_percentile_percentile",
         "targetscan_context_score_percentile",
         "targetscan_aggregate_context_score_percentile",
         "targetscan_pct_percentile",
@@ -328,8 +327,7 @@ def _conservation_key_evidence(row: pd.Series) -> List[str]:
     if np.isfinite(raw_percentile):
         _append_line(
             lines,
-            f"TargetScan published percentile {raw_percentile:g}"
-            + _format_support_suffix(row, ["targetscan_context_score_percentile_percentile"]),
+            f"TargetScan published percentile {raw_percentile:g}",
         )
 
     if _as_int(row.get("targetscan_conserved_site"), 0) == 1:
@@ -637,6 +635,10 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
     raw_key_values: Dict[str, Any] = {}
     raw_keys = [
         "support_count",
+        "mirassist_xgboost_score",
+        "learned_score_used",
+        "_learned_score_missing",
+        "score_column_used",
         "overall_evidence_support_percentile",
         "evidence_family_count",
         "seed_pairing_score",

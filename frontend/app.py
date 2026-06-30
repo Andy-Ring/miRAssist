@@ -5,35 +5,24 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import json
 import os
 import time
 import traceback
 import uuid
 
+import altair as alt
 import pandas as pd
-import requests
 import streamlit as st
 
 from backend.config import (
-    database_configured,
-    get_app_mode,
     get_debug_max_rows,
     get_debug_ui,
-    get_evidence_backend,
-    get_jobstore_backend,
-    get_llm_backend,
-    get_planner_model,
-    get_synth_model,
-    openai_configured,
-    resolve_backend_url,
 )
 from backend.jobstore import read_job
 from backend.worker import run_query_job
 from frontend.help_content import (
     get_about_evidence_markdown,
     get_how_to_use_markdown,
-    should_show_api_connection_controls,
 )
 
 
@@ -61,9 +50,6 @@ def load_local_dotenv() -> None:
 
 
 load_local_dotenv()
-
-APP_MODE = get_app_mode()
-DEFAULT_BACKEND_URL = resolve_backend_url()
 
 
 st.set_page_config(page_title="miRAssist", layout="wide")
@@ -114,125 +100,21 @@ st.markdown(
 
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.9.1"
+APP_VERSION = "0.9.2"
 APP_AUTHOR = "Andy Ring"
-
-
-def normalize_base_url(u: str) -> str:
-    u = (u or "").strip()
-    if u.endswith("/"):
-        u = u[:-1]
-    return u
-
-
-def safe_request_json(method: str, url: str, timeout=30, **kwargs):
-    r = requests.request(method, url, timeout=timeout, **kwargs)
-    ct = (r.headers.get("content-type") or "").lower()
-
-    if "application/json" not in ct:
-        raise RuntimeError(
-            f"Non-JSON response from {url}\n"
-            f"status={r.status_code} content-type={ct}\n"
-            f"text_head={r.text[:1000]}"
-        )
-
-    try:
-        data = r.json()
-    except Exception as e:
-        raise RuntimeError(
-            f"Could not parse JSON response from {url}\n"
-            f"status={r.status_code}\n"
-            f"text_head={r.text[:1000]}\n"
-            f"error={e}"
-        )
-
-    if r.status_code >= 400:
-        raise RuntimeError(
-            f"Backend request failed: {method} {url}\n"
-            f"status={r.status_code}\n"
-            f"response={json.dumps(data, indent=2)[:4000]}"
-        )
-
-    return data
-
-
-def is_terminal_status(status_json: dict) -> bool:
-    status = status_json.get("status", "unknown")
-    stage = status_json.get("stage")
-
-    if status in {"done", "error", "failed", "not_found"}:
-        return True
-
-    if status == "unknown" and stage in {
-        "queued",
-        "planner",
-        "planning",
-        "retrieval",
-        "retrieve",
-        "shortlist",
-        "synthesis",
-        "synthesizing",
-        "generation",
-        "generating",
-    }:
-        return False
-
-    if status in {"queued", "running"}:
-        return False
-
-    return False
-
-
-def status_display_text(status_json: dict) -> str:
-    status = status_json.get("status", "unknown")
-    stage = status_json.get("stage")
-
-    bits = [f"Status: **{status}**"]
-    if stage:
-        bits.append(f"stage: **{stage}**")
-
-    ranking_mode = status_json.get("ranking_mode")
-    if ranking_mode:
-        bits.append(f"ranking: **{ranking_mode}**")
-
-    structure_alpha = status_json.get("structure_alpha")
-    if structure_alpha is not None:
-        bits.append(f"structure alpha: **{structure_alpha}**")
-
-    return " | ".join(bits)
-
-
-def progress_from_status(status_json: dict, elapsed: float, max_wait_seconds: int) -> float:
-    status = status_json.get("status", "unknown")
-    stage = status_json.get("stage")
-
-    if status == "done":
-        return 1.0
-
-    stage_progress = {
-        "queued": 0.05,
-        "planner": 0.20,
-        "planning": 0.20,
-        "retrieval": 0.45,
-        "retrieve": 0.45,
-        "shortlist": 0.55,
-        "synthesis": 0.75,
-        "synthesizing": 0.75,
-        "generation": 0.80,
-        "generating": 0.80,
-    }
-
-    if stage in stage_progress:
-        base = stage_progress[stage]
-    elif status == "queued":
-        base = 0.05
-    elif status == "running":
-        base = 0.35
-    else:
-        base = 0.15
-
-    time_component = min(0.20, elapsed / max(1, max_wait_seconds) * 0.20)
-    return min(0.99, base + time_component)
+DEFAULT_UI_CANDIDATE_POOL = 10
+DEFAULT_UI_MIN_SUPPORT = 2
+CHART_SCORE_COLUMNS = [
+    "mirassist_xgboost_score",
+    "learned_score_used",
+    "retrieval_rank_score",
+    "best_backend_model_score",
+    "learned_score",
+    "model_score",
+    "overall_evidence_support_percentile",
+    "retrieval_score",
+    "support_count",
+]
 
 
 def _get_nested_dict(payload: dict, path: tuple) -> dict:
@@ -529,20 +411,6 @@ def sidebar_footer(author: str, version: str):
     )
 
 
-def get_app_diagnostics(api_url: str) -> dict:
-    return {
-        "app_mode": APP_MODE,
-        "llm_backend": get_llm_backend(),
-        "planner_model": get_planner_model(),
-        "synth_model": get_synth_model(),
-        "openai_configured": openai_configured(),
-        "jobstore_backend": get_jobstore_backend(),
-        "evidence_backend": get_evidence_backend(),
-        "database_configured": database_configured(),
-        "backend_url_in_use": bool(APP_MODE == "api" and api_url),
-    }
-
-
 def clear_session_outputs() -> None:
     for key in [
         "last_result",
@@ -555,6 +423,80 @@ def clear_session_outputs() -> None:
         st.session_state.pop(key, None)
 
 
+def _format_candidate_label(row: pd.Series) -> str:
+    gene = str(row.get("gene_symbol", "") or "").strip()
+    mirna = str(row.get("mirna_name", "") or "").strip()
+    if gene and mirna:
+        return f"{gene} <- {mirna}"
+    return gene or mirna or "Unknown candidate"
+
+
+def _pick_chart_score_column(df: pd.DataFrame) -> str | None:
+    for column in CHART_SCORE_COLUMNS:
+        if column not in df.columns:
+            continue
+        values = pd.to_numeric(df[column], errors="coerce")
+        if values.notna().any():
+            return column
+    return None
+
+
+def build_shortlist_chart_frame(shortlist: list[dict]) -> tuple[pd.DataFrame, str | None]:
+    if not isinstance(shortlist, list) or not shortlist:
+        return pd.DataFrame(), None
+
+    df = pd.DataFrame(shortlist).copy()
+    score_column = _pick_chart_score_column(df)
+    if not score_column:
+        return pd.DataFrame(), None
+
+    df[score_column] = pd.to_numeric(df[score_column], errors="coerce")
+    df = df.loc[df[score_column].notna()].copy()
+    if df.empty:
+        return pd.DataFrame(), None
+
+    df["candidate_label"] = df.apply(_format_candidate_label, axis=1)
+    if "support_count" in df.columns:
+        df["support_count"] = pd.to_numeric(df["support_count"], errors="coerce")
+
+    chart_columns = [
+        col
+        for col in ["candidate_label", score_column, "support_count", "score_column_used"]
+        if col in df.columns
+    ]
+    chart_df = df.sort_values(score_column, ascending=False).head(10).loc[:, chart_columns]
+    return chart_df, score_column
+
+
+def render_shortlist_chart(shortlist: list[dict]) -> None:
+    chart_df, score_column = build_shortlist_chart_frame(shortlist)
+    if chart_df.empty or not score_column:
+        st.info("No chartable ranked candidates were returned.")
+        return
+
+    tooltip = [
+        alt.Tooltip("candidate_label:N", title="Candidate"),
+        alt.Tooltip(f"{score_column}:Q", title=score_column, format=".4f"),
+    ]
+    if "support_count" in chart_df.columns:
+        tooltip.append(alt.Tooltip("support_count:Q", title="Support count", format=".0f"))
+    if "score_column_used" in chart_df.columns:
+        tooltip.append(alt.Tooltip("score_column_used:N", title="Score column used"))
+
+    chart = (
+        alt.Chart(chart_df)
+        .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
+        .encode(
+            x=alt.X(f"{score_column}:Q", title=score_column),
+            y=alt.Y("candidate_label:N", sort="-x", title=None),
+            tooltip=tooltip,
+        )
+        .properties(height=max(280, 32 * len(chart_df)))
+    )
+    st.altair_chart(chart, use_container_width=True)
+    st.caption(f"Showing the top {len(chart_df)} retrieved candidates ranked by `{score_column}`.")
+
+
 def run_direct_mode(submit_payload: dict) -> None:
     query_id = uuid.uuid4().hex[:16]
     st.session_state["last_query_id"] = query_id
@@ -565,13 +507,14 @@ def run_direct_mode(submit_payload: dict) -> None:
     status_box.info("Status: **queued** | mode: **direct**")
     progress.progress(0.05)
 
-    with st.spinner("Running miRAssist directly in this Streamlit process..."):
+    with st.spinner("Running miRAssist query..."):
         result = run_query_job(
             query_id=query_id,
             question=submit_payload["question"],
             k=submit_payload["k"],
             min_support=submit_payload["min_support"],
             novel=submit_payload["novel"],
+            disable_synthesis=submit_payload["disable_synthesis"],
             require_binding_evidence=submit_payload["require_binding_evidence"],
             require_expression=submit_payload["require_expression"],
             pathway_mode="auto",
@@ -596,106 +539,15 @@ def run_direct_mode(submit_payload: dict) -> None:
             f"Status: **{final_result.get('status', 'error')}** | "
             f"{final_result.get('error', 'Direct mode execution failed.')}"
         )
-
-
-def run_api_mode(api_url: str, submit_payload: dict) -> None:
-    resp = safe_request_json(
-        "POST",
-        f"{api_url}/query",
-        json=submit_payload,
-        timeout=60,
-    )
-    st.session_state["last_submit_response"] = resp
-
-    query_id = resp.get("query_id") or resp.get("job_id") or resp.get("id")
-    if not query_id:
-        raise RuntimeError(
-            "Backend did not return a query_id/job_id/id.\n"
-            f"Response: {json.dumps(resp, indent=2)[:4000]}"
-        )
-
-    st.session_state["last_query_id"] = query_id
-    st.info(f"Submitted: `{query_id}`")
-
-    status_box = st.empty()
-    progress = st.progress(0)
-    max_wait_seconds = 15 * 60
-    poll_every = 5
-    t0 = time.time()
-
-    with st.spinner("Running..."):
-        final_status_json = {}
-
-        while True:
-            elapsed = time.time() - t0
-            if elapsed > max_wait_seconds:
-                raise TimeoutError("Timed out waiting for miRAssist to finish.")
-
-            s = safe_request_json("GET", f"{api_url}/status/{query_id}", timeout=30)
-            st.session_state["last_status"] = s
-            final_status_json = s
-
-            progress.progress(progress_from_status(s, elapsed, max_wait_seconds))
-            status_box.info(f"{status_display_text(s)} | elapsed: **{int(elapsed)}s**")
-
-            if is_terminal_status(s):
-                break
-            time.sleep(poll_every)
-
-    status = final_status_json.get("status", "unknown")
-    if status in {"error", "failed", "not_found"}:
-        try:
-            result = safe_request_json("GET", f"{api_url}/result/{query_id}", timeout=60)
-            st.session_state["last_result"] = result
-        except Exception:
-            pass
-
-        err_msg = final_status_json.get("error") or f"Backend returned status: {status}"
-        raise RuntimeError(err_msg)
-
-    result = safe_request_json("GET", f"{api_url}/result/{query_id}", timeout=600)
-    st.session_state["last_result"] = result
-    progress.progress(1.0)
-
-
 st.title("Welcome to miRAssist")
 st.caption("Enter your natural language prompt below to query the miRNA-target database")
 
 with st.sidebar:
-    default_url = st.session_state.get("api_url", DEFAULT_BACKEND_URL)
-    api_url = normalize_base_url(default_url)
-
     with st.expander("How to use miRAssist", expanded=False):
         st.markdown(get_how_to_use_markdown())
 
     with st.expander("About evidence", expanded=False):
         st.markdown(get_about_evidence_markdown())
-
-    if should_show_api_connection_controls(APP_MODE):
-        st.subheader("Connection")
-        st.caption(f"Mode: `{APP_MODE}`")
-        api_url = st.text_input(
-            "Backend API base URL",
-            value=default_url,
-            placeholder="http://127.0.0.1:7861 or https://xxxxx.ngrok-free.app",
-            help="Paste the base URL only (no trailing slash).",
-        )
-        api_url = normalize_base_url(api_url)
-        st.session_state["api_url"] = api_url
-        ping = st.button("Test Connection")
-
-        if ping:
-            if not api_url:
-                st.warning("Enter an API base URL first.")
-            else:
-                try:
-                    out = safe_request_json("GET", f"{api_url}/health", timeout=10)
-                    st.success("Backend reachable.")
-                    st.json(out)
-                except Exception as e:
-                    st.error(str(e))
-    else:
-        st.session_state["api_url"] = api_url
 
     sidebar_footer(APP_AUTHOR, APP_VERSION)
 
@@ -712,7 +564,7 @@ st.caption(
     "miRAssist will infer settings from your question. These controls override defaults without needing to specify in the question."
 )
 
-c1, c2, c3 = st.columns(3)
+c1 = st.columns(1)[0]
 with c1:
     novel = st.checkbox(
         "Novel mode",
@@ -722,26 +574,8 @@ with c1:
             "It may still mention known targets."
         ),
     )
-with c2:
-    k = st.number_input(
-        "Candidate pool size (k)",
-        min_value=3,
-        max_value=25,
-        value=10,
-        step=1,
-        help="k is the number of evidence cards passed to the synthesizer after backend filtering and scoring. The app prints the top 5 ranked results by default.",
-    )
-with c3:
-    min_support = st.number_input(
-        "Min support",
-        min_value=1,
-        max_value=10,
-        value=2,
-        step=1,
-        help="Minimum number of supporting evidence channels required to keep a pair.",
-    )
 
-run_disabled = not question.strip() or (APP_MODE == "api" and not st.session_state.get("api_url"))
+run_disabled = not question.strip()
 run = st.button("Run miRAssist", type="primary", disabled=run_disabled)
 
 
@@ -752,22 +586,20 @@ if run:
         submit_payload = {
             "question": question.strip(),
             "novel": bool(novel),
-            "k": int(k),
-            "min_support": int(min_support),
+            "k": DEFAULT_UI_CANDIDATE_POOL,
+            "min_support": DEFAULT_UI_MIN_SUPPORT,
+            "disable_synthesis": True,
             "require_binding_evidence": False,
             "require_expression": False,
             "pathway_mode": "auto",
         }
 
-        if APP_MODE == "direct":
-            run_direct_mode(submit_payload)
-        else:
-            run_api_mode(st.session_state.get("api_url", ""), submit_payload)
+        run_direct_mode(submit_payload)
     except Exception as e:
-        st.session_state["last_error"] = "The query failed during retrieval or answer generation."
+        st.session_state["last_error"] = "The query failed during retrieval or chart generation."
         st.session_state["last_error_traceback"] = traceback.format_exc()
         if get_debug_ui():
-            st.session_state["last_error"] = f"The query failed during retrieval or answer generation.\n\n{e}"
+            st.session_state["last_error"] = f"The query failed during retrieval or chart generation.\n\n{e}"
 
 
 err = st.session_state.get("last_error")
@@ -786,28 +618,38 @@ if result:
     if result_status in {"error", "failed", "not_found"}:
         st.error(result.get("error", f"Backend returned status: {result_status}"))
     else:
-        st.markdown("## Answer")
+        shortlist = result.get("shortlist", [])
+        synthesis_disabled = bool(result.get("disable_synthesis"))
 
-        summary_md = pick_summary_markdown(result)
-        if summary_md:
-            placeholder = st.empty()
-            if st.session_state.get("animate_answer", True):
-                typewriter_markdown(
-                    summary_md,
-                    placeholder,
-                    cps=int(st.session_state.get("typing_speed", 80)),
-                    chunk=st.session_state.get("typing_mode", "word"),
-                )
-            else:
-                placeholder.markdown(summary_md, unsafe_allow_html=False)
+        if synthesis_disabled:
+            st.markdown("## Retrieved candidates")
+            render_shortlist_chart(shortlist)
+            summary_md = pick_summary_markdown(result)
+            if summary_md and not shortlist:
+                st.info(summary_md)
         else:
-            st.info("No summary text found in backend response.")
+            st.markdown("## Answer")
 
-        experiments = pick_suggested_experiments(result)
-        if experiments:
-            st.markdown("## Suggested experiments")
-            for exp in experiments:
-                st.markdown(f"- {exp}")
+            summary_md = pick_summary_markdown(result)
+            if summary_md:
+                placeholder = st.empty()
+                if st.session_state.get("animate_answer", True):
+                    typewriter_markdown(
+                        summary_md,
+                        placeholder,
+                        cps=int(st.session_state.get("typing_speed", 80)),
+                        chunk=st.session_state.get("typing_mode", "word"),
+                    )
+                else:
+                    placeholder.markdown(summary_md, unsafe_allow_html=False)
+            else:
+                st.info("No summary text found in backend response.")
+
+            experiments = pick_suggested_experiments(result)
+            if experiments:
+                st.markdown("## Suggested experiments")
+                for exp in experiments:
+                    st.markdown(f"- {exp}")
 
         with st.expander("Planner output (QuerySpec)", expanded=False):
             queryspec = extract_queryspec(result)
@@ -823,13 +665,14 @@ if result:
                 )
 
         with st.expander("Evidence shortlist", expanded=False):
-            shortlist = result.get("shortlist", [])
             if isinstance(shortlist, list) and len(shortlist) > 0:
                 max_rows = max(1, int(get_debug_max_rows()))
                 df = pd.DataFrame(shortlist[:max_rows])
                 preferred_columns = [
                     "gene_symbol",
                     "mirna_name",
+                    "mirassist_xgboost_score",
+                    "score_column_used",
                     "learned_score_xgb_raw_v1",
                     "learned_score_xgb_raw_nomissing_v1",
                     "learned_score_used",

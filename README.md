@@ -1,9 +1,6 @@
 # miRAssist
 
-miRAssist supports two deployment styles while preserving the same planner, retrieval, prompt-bundle, and synthesizer workflow:
-
-- Direct Streamlit mode for Posit Connect Cloud
-- Optional FastAPI/API mode for a separated backend later
+miRAssist now runs as a direct Streamlit app that keeps planner, retrieval, and ranking in-process.
 
 ## Deploying miRAssist on Posit Connect Cloud
 
@@ -13,12 +10,11 @@ Recommended first deployment architecture:
 2. Supabase/Postgres stores persistent jobs and optionally evidence data.
 3. OpenAI-hosted models run the planner and synthesizer.
 4. No Google Cloud Run backend is required for the first deployment.
-5. FastAPI/API mode remains available as an optional future architecture.
+5. No separate FastAPI backend is required.
 
 Required Posit environment variables:
 
 ```bash
-MIRASSIST_APP_MODE=direct
 MIRASSIST_LLM_BACKEND=openai
 OPENAI_API_KEY=...
 MIRASSIST_PLANNER_MODEL=gpt-5.4-nano
@@ -49,7 +45,6 @@ The repo includes a root [requirements.txt](C:\Users\andym\OneDrive - University
 This is the same execution path Posit should use:
 
 ```bash
-MIRASSIST_APP_MODE=direct
 JOBSTORE_BACKEND=filesystem
 EVIDENCE_BACKEND=parquet
 MIRASSIST_EVIDENCE=/path/to/evidence_pairs_tcga.parquet
@@ -60,32 +55,11 @@ streamlit run app.py
 
 In direct mode, Streamlit runs the workflow in-process via `backend.worker.run_query_job` and still writes job state through the shared jobstore layer.
 
-The default direct-mode UI is intentionally standalone:
+The default UI is intentionally standalone:
 
 - No backend connection box is shown in the app
 - The sidebar includes `How to use miRAssist` and `About evidence` help sections
-- API connection controls remain available only when `MIRASSIST_APP_MODE=api`
-- Normal users only see the final answer plus `Planner output (QuerySpec)` and `Evidence shortlist`
-
-## Optional API mode
-
-API mode preserves the current split frontend/backend flow:
-
-- `POST /query`
-- `GET /status/{query_id}`
-- `GET /result/{query_id}`
-
-Run it locally with:
-
-```bash
-pip install -r backend/requirements.txt
-uvicorn backend.app:app --reload --host 0.0.0.0 --port 7861
-MIRASSIST_APP_MODE=api
-BACKEND_URL=http://127.0.0.1:7861
-streamlit run app.py
-```
-
-This mode is now primarily developer-facing. The default Posit deployment should stay in direct mode.
+- Normal users see the ranked candidate chart plus `Planner output (QuerySpec)` and `Evidence shortlist`
 
 ## Using OpenAI-hosted models
 
@@ -243,20 +217,6 @@ cp .env.example .env
 
 Do not use `.env` for production secrets on Posit Connect Cloud. Set them through Posit environment variables and secrets instead.
 
-## Optional Cloud Run / FastAPI backend
-
-Cloud Run and the FastAPI backend remain in the repository as optional alternatives if you later want a separated backend service.
-
-Artifacts kept for that path:
-
-- [backend/app.py](C:\Users\andym\OneDrive - University of Georgia\Documents\miRAssist\backend\app.py)
-- [Dockerfile](C:\Users\andym\OneDrive - University of Georgia\Documents\miRAssist\Dockerfile)
-- [scripts/deploy_cloud_run.sh](C:\Users\andym\OneDrive - University of Georgia\Documents\miRAssist\scripts\deploy_cloud_run.sh)
-
-That path is no longer required for the first Posit deployment.
-
-The FastAPI/API mode is now primarily developer-only. Normal deployment should use Posit direct mode with OpenAI and Supabase.
-
 ## Smoke checks
 
 Basic direct-mode import smoke:
@@ -299,4 +259,3 @@ python -m unittest tests.test_evidence_features
 
 - Confirm the Supabase evidence table schema matches the columns expected by the current retrieval logic.
 - Move long-running production execution to a queue/worker system later if you outgrow in-process direct execution.
-- Keep the optional Cloud Run/API path only if you later want a split architecture.

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+import importlib.util
 import json
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence
+import sys
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -11,6 +14,8 @@ import pandas as pd
 
 INPUT_PATH = Path("data/processed/mirassist_clean_evidence.parquet")
 OUTPUT_DIR = Path("data/supabase_export")
+DEFAULT_MODEL_PATH = Path("evaluation/clean_evidence_eval/models/best_backend_model.pkl")
+DEFAULT_METADATA_PATH = Path("evaluation/clean_evidence_eval/models/best_backend_model_metadata.json")
 
 LEAKAGE_TOKENS: tuple[str, ...] = (
     "mirtarbase",
@@ -70,7 +75,6 @@ FAMILY_CONFIGS: Dict[str, Dict[str, Any]] = {
         "flag_columns": ["has_targetscan_evidence"],
         "percentile_bases": [
             "targetscan_context_score",
-            "targetscan_context_score_percentile",
             "targetscan_aggregate_context_score",
             "targetscan_pct",
             "targetscan_branch_length_score",
@@ -175,7 +179,6 @@ NUMERIC_PERCENTILE_SPECS: Dict[str, Dict[str, Any]] = {
         "invert": True,
         "output_column": "targetscan_context_score_support_percentile",
     },
-    "targetscan_context_score_percentile": {"invert": False},
     "targetscan_aggregate_context_score": {"invert": True},
     "targetscan_pct": {"invert": False},
     "targetscan_branch_length_score": {"invert": False},
@@ -222,11 +225,16 @@ CORE_ID_COLUMNS: tuple[str, ...] = (
 )
 
 SCHEMA_FAMILY_OVERRIDES: Dict[str, str] = {
+    "mirassist_xgboost_score": "model_output",
     "targetscan_context_score_support_percentile": "sequence_conservation",
     "support_count": "app_summary",
     "support_targetscan": "sequence_conservation",
     "support_encori": "functional_binding",
     "support_rnahybrid": "thermodynamic_stability",
+}
+
+SCHEMA_ROLE_OVERRIDES: Dict[str, str] = {
+    "mirassist_xgboost_score": "backend_score",
 }
 
 
@@ -236,6 +244,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--input", default=str(INPUT_PATH), help="Input clean evidence parquet path.")
     parser.add_argument("--output-dir", default=str(OUTPUT_DIR), help="Output directory.")
+    parser.add_argument("--model-pickle", default=str(DEFAULT_MODEL_PATH), help="Trained backend model pickle path.")
+    parser.add_argument("--model-metadata", default=str(DEFAULT_METADATA_PATH), help="Trained backend model metadata JSON path.")
+    parser.add_argument("--batch-size", type=int, default=250000, help="Batch size for model scoring.")
     return parser.parse_args()
 
 
@@ -285,6 +296,136 @@ def _find_leakage_columns(columns: Iterable[str]) -> List[str]:
     return blocked
 
 
+def _load_json(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"Required JSON file not found: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _load_learned_ranker_module() -> Any:
+    module_path = Path("evaluation/scripts/08_train_learned_ranker.py").resolve()
+    spec = importlib.util.spec_from_file_location("eval_learned_ranker", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Unable to load learned-ranker module from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _extract_metadata_feature_columns(metadata: Dict[str, Any], artifact: Any) -> List[str]:
+    metrics = metadata.get("metrics") if isinstance(metadata.get("metrics"), dict) else {}
+    candidates: List[Any] = [
+        metadata.get("feature_columns"),
+        metadata.get("feature_names"),
+        metadata.get("selected_feature_columns"),
+        metrics.get("feature_columns"),
+        metrics.get("feature_names"),
+        metrics.get("selected_feature_columns"),
+        artifact.get("feature_names") if isinstance(artifact, dict) else None,
+        artifact.get("selected_feature_columns") if isinstance(artifact, dict) else None,
+    ]
+
+    for value in candidates:
+        if isinstance(value, str):
+            parsed = [part.strip() for part in value.split(",") if part.strip()]
+            if parsed:
+                return parsed
+        if isinstance(value, list) and value:
+            return [str(item) for item in value]
+
+    numeric_columns = metadata.get("numeric_columns")
+    categorical_columns = metadata.get("categorical_columns")
+    if isinstance(numeric_columns, list) or isinstance(categorical_columns, list):
+        ordered: List[str] = []
+        for column in list(numeric_columns or []) + list(categorical_columns or []):
+            text = str(column).strip()
+            if text and text not in ordered:
+                ordered.append(text)
+        if ordered:
+            return ordered
+
+    raise RuntimeError(
+        "Could not determine model feature columns from metadata or artifact. "
+        "Expected feature_columns, feature_names, selected_feature_columns, or numeric/categorical column lists."
+    )
+
+
+def _predict_in_batches(estimator: Any, feature_df: pd.DataFrame, batch_size: int) -> np.ndarray:
+    outputs: List[np.ndarray] = []
+    batch_size = max(1, int(batch_size))
+    for start in range(0, len(feature_df), batch_size):
+        batch = feature_df.iloc[start : start + batch_size]
+        if hasattr(estimator, "predict_proba"):
+            outputs.append(np.asarray(estimator.predict_proba(batch)[:, 1], dtype=float))
+        elif hasattr(estimator, "decision_function"):
+            outputs.append(np.asarray(estimator.decision_function(batch), dtype=float))
+        else:
+            outputs.append(np.asarray(estimator.predict(batch), dtype=float))
+    if not outputs:
+        return np.zeros(0, dtype=float)
+    return np.concatenate(outputs)
+
+
+def _score_with_backend_model(
+    evidence_df: pd.DataFrame,
+    *,
+    model_pickle_path: Path,
+    metadata_path: Path,
+    batch_size: int,
+) -> Tuple[pd.Series, Dict[str, Any]]:
+    if not model_pickle_path.exists():
+        raise FileNotFoundError(f"Trained backend model pickle not found: {model_pickle_path}")
+
+    metadata = _load_json(metadata_path)
+    try:
+        import joblib
+    except ImportError as exc:
+        raise RuntimeError("joblib is required to load learned model artifacts.") from exc
+
+    artifact = joblib.load(model_pickle_path)
+    estimator = artifact.get("model") if isinstance(artifact, dict) and "model" in artifact else artifact
+    feature_columns = _extract_metadata_feature_columns(metadata, artifact)
+
+    model_name = str(
+        metadata.get("model_name")
+        or (artifact.get("model_name") if isinstance(artifact, dict) else "")
+        or ""
+    ).strip()
+    if model_name and model_name.lower() != "xgboost":
+        print(f"[WARN] metadata model_name={model_name!r}, expected 'xgboost'. Continuing with pickle artifact.")
+
+    learned = _load_learned_ranker_module()
+    feature_set = str(
+        metadata.get("feature_set")
+        or (artifact.get("feature_set") if isinstance(artifact, dict) else "all")
+        or "all"
+    )
+    include_missingness_indicators = bool(
+        metadata.get("include_missingness_indicators")
+        if metadata.get("include_missingness_indicators") is not None
+        else (artifact.get("include_missingness_indicators", True) if isinstance(artifact, dict) else True)
+    )
+
+    feature_df, prepared_feature_names, prep_notes = learned.prepare_feature_frame(
+        evidence_df,
+        feature_set=feature_set,
+        include_missingness_indicators=include_missingness_indicators,
+        selected_feature_columns=feature_columns,
+    )
+    if list(prepared_feature_names) != list(feature_columns):
+        raise RuntimeError("Prepared feature names did not match expected feature ordering for the trained model.")
+
+    scores = _predict_in_batches(estimator, feature_df.loc[:, list(feature_columns)], batch_size=batch_size)
+    return pd.Series(scores, index=evidence_df.index, dtype=float), {
+        "model_name": model_name or "unknown",
+        "feature_set": feature_set,
+        "feature_columns": list(feature_columns),
+        "include_missingness_indicators": include_missingness_indicators,
+        "prep_notes": prep_notes,
+        "score_timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+
+
 def _family_missing_columns(df: pd.DataFrame) -> Dict[str, List[str]]:
     return {
         family: [column for column in cfg["columns"] if column not in df.columns]
@@ -313,7 +454,7 @@ def _mean_percentile(df: pd.DataFrame, columns: Sequence[str]) -> pd.Series:
     return df[present].apply(pd.to_numeric, errors="coerce").mean(axis=1, skipna=True).round(3)
 
 
-def _count_family_evidence(df: pd.DataFrame, family: str, columns: Sequence[str], flag_columns: Sequence[str]) -> pd.Series:
+def _count_family_evidence(df: pd.DataFrame, columns: Sequence[str], flag_columns: Sequence[str]) -> pd.Series:
     count = pd.Series(0, index=df.index, dtype=int)
     for column in columns:
         if column not in df.columns:
@@ -350,7 +491,9 @@ def _build_schema(df: pd.DataFrame) -> pd.DataFrame:
 
     for column in df.columns:
         lower = str(column).lower()
-        if column in CORE_ID_COLUMNS or lower.endswith("_normalized"):
+        if column in SCHEMA_ROLE_OVERRIDES:
+            role = SCHEMA_ROLE_OVERRIDES[column]
+        elif column in CORE_ID_COLUMNS or lower.endswith("_normalized"):
             role = "id/entity"
         elif lower.endswith("_support_percentile") or (
             lower.endswith("_percentile") and not lower.startswith("overall_")
@@ -387,6 +530,8 @@ def main() -> None:
     args = parse_args()
     input_path = Path(args.input).resolve()
     output_dir = Path(args.output_dir).resolve()
+    model_pickle_path = Path(args.model_pickle).resolve()
+    metadata_path = Path(args.model_metadata).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     parquet_out = output_dir / "mirassist_supabase_evidence.parquet"
@@ -410,6 +555,14 @@ def main() -> None:
     leakage_columns = _find_leakage_columns(df.columns)
     export_df = df.drop(columns=leakage_columns, errors="ignore").copy()
 
+    model_scores, model_diagnostics = _score_with_backend_model(
+        df,
+        model_pickle_path=model_pickle_path,
+        metadata_path=metadata_path,
+        batch_size=args.batch_size,
+    )
+    export_df["mirassist_xgboost_score"] = model_scores
+
     added_percentile_columns: List[str] = []
     for base_name, spec in NUMERIC_PERCENTILE_SPECS.items():
         if base_name not in export_df.columns:
@@ -423,8 +576,6 @@ def main() -> None:
         export_df[output_column] = _compute_percentile(numeric, invert=bool(spec.get("invert", False)))
         added_percentile_columns.append(output_column)
 
-    # Mean is used for family support because it reflects consistent support across
-    # the available evidence fields rather than letting one extreme metric dominate.
     family_summary_columns: List[str] = []
     family_coverage_summary: Dict[str, Dict[str, Any]] = {}
     family_json_columns: Dict[str, List[str]] = {}
@@ -435,20 +586,17 @@ def main() -> None:
 
         percentile_columns: List[str] = []
         for base_name in cfg["percentile_bases"]:
-            if base_name == "targetscan_context_score" and "targetscan_context_score_support_percentile" in export_df.columns:
-                percentile_columns.append("targetscan_context_score_support_percentile")
             candidate = NUMERIC_PERCENTILE_SPECS.get(base_name, {}).get(
                 "output_column",
                 f"{base_name}_percentile",
             )
             if candidate in export_df.columns and candidate not in percentile_columns:
                 percentile_columns.append(candidate)
-            if base_name in export_df.columns and str(base_name).endswith("_percentile") and base_name not in percentile_columns:
-                percentile_columns.append(base_name)
+        if family == "sequence_conservation" and "targetscan_context_score_percentile" in export_df.columns:
+            percentile_columns.append("targetscan_context_score_percentile")
 
         evidence_count = _count_family_evidence(
             export_df,
-            family=family,
             columns=cfg["columns"],
             flag_columns=cfg["flag_columns"],
         )
@@ -500,6 +648,7 @@ def main() -> None:
             "evidence_family_count",
             "evidence_family_summary_json",
             "support_count",
+            "mirassist_xgboost_score",
         ]
     )
 
@@ -508,6 +657,7 @@ def main() -> None:
     export_df.to_csv(csv_out, index=False, compression="gzip")
     schema_df.to_csv(schema_out, index=False)
 
+    score_values = pd.to_numeric(export_df["mirassist_xgboost_score"], errors="coerce")
     report_lines: List[str] = [
         "miRAssist Supabase evidence export report",
         "=" * 40,
@@ -517,6 +667,9 @@ def main() -> None:
         f"schema_output: {schema_out}",
         f"input_shape: {df.shape}",
         f"output_shape: {export_df.shape}",
+        f"model_pickle_path: {model_pickle_path}",
+        f"model_metadata_path: {metadata_path}",
+        f"model_name: {model_diagnostics['model_name']}",
         "",
         "dropped_leakage_columns:",
     ]
@@ -533,16 +686,17 @@ def main() -> None:
             report_lines.append(f"- {family}: none")
 
     report_lines.extend(["", "added_percentile_columns:"])
-    report_lines.extend(f"- {column}" for column in added_percentile_columns or ["none"])
+    report_lines.extend(f"- {column}" for column in (added_percentile_columns or ["none"]))
     report_lines.extend(["", "added_family_summary_columns:"])
     report_lines.extend(f"- {column}" for column in family_summary_columns)
+    report_lines.extend(["", "model_score_summary:"])
+    report_lines.append(f"- mirassist_xgboost_score_non_null_count: {int(score_values.notna().sum())}")
+    report_lines.append(f"- mirassist_xgboost_score_min: {float(score_values.min()) if score_values.notna().any() else 'nan'}")
+    report_lines.append(f"- mirassist_xgboost_score_median: {float(score_values.median()) if score_values.notna().any() else 'nan'}")
+    report_lines.append(f"- mirassist_xgboost_score_max: {float(score_values.max()) if score_values.notna().any() else 'nan'}")
     report_lines.extend(["", "top_level_evidence_coverage_summary:"])
     for family, stats in family_coverage_summary.items():
-        mean_support = (
-            "nan"
-            if np.isnan(stats["mean_support_percentile"])
-            else f"{stats['mean_support_percentile']:.2f}"
-        )
+        mean_support = "nan" if np.isnan(stats["mean_support_percentile"]) else f"{stats['mean_support_percentile']:.2f}"
         report_lines.append(
             f"- {family}: rows={stats['available_rows']}, "
             f"percent={stats['available_percent']:.2f}, mean_support_percentile={mean_support}"
@@ -563,6 +717,15 @@ def main() -> None:
             f"available_percent={stats['available_percent']:.2f}, "
             f"mean_support_percentile={stats['mean_support_percentile']}"
         )
+    print(f"mirassist_xgboost_score non-null count: {int(score_values.notna().sum())}")
+    print(
+        "mirassist_xgboost_score min/median/max:",
+        {
+            "min": float(score_values.min()) if score_values.notna().any() else float('nan'),
+            "median": float(score_values.median()) if score_values.notna().any() else float('nan'),
+            "max": float(score_values.max()) if score_values.notna().any() else float('nan'),
+        },
+    )
     print(f"Wrote parquet: {parquet_out}")
     print(f"Wrote csv.gz: {csv_out}")
     print(f"Wrote schema: {schema_out}")

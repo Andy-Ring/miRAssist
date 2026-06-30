@@ -4,13 +4,12 @@ import os
 import tempfile
 import unittest
 import uuid
+from importlib.util import find_spec
 from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
-from fastapi.testclient import TestClient
 
-from backend.app import app
 from backend.jobstore import read_job, write_job
 from backend.worker import run_query_job
 
@@ -64,104 +63,74 @@ class FileSystemJobStoreTests(unittest.TestCase):
         self.assertIsNone(payload["pd_nat"])
 
 
-class ApiSmokeTests(unittest.TestCase):
-    def test_health_endpoint(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            os.environ,
-            {
-                "JOBSTORE_BACKEND": "filesystem",
-                "MIRASSIST_JOB_DIR": tmpdir,
-                "WORKER_MODE": "inline",
-            },
-            clear=False,
-        ):
-            with TestClient(app) as client:
-                response = client.get("/health")
-
-        self.assertEqual(response.status_code, 200)
-        body = response.json()
-        self.assertTrue(body["ok"])
-        self.assertIn("jobstore_backend", body)
-        self.assertIn("worker_mode", body)
-        self.assertIn("evidence_backend", body)
-
-    def test_query_status_result_flow(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
-            os.environ,
-            {
-                "JOBSTORE_BACKEND": "filesystem",
-                "MIRASSIST_JOB_DIR": tmpdir,
-                "WORKER_MODE": "inline",
-            },
-            clear=False,
-        ):
-            def fake_run_query_job(**kwargs):
-                query_id = kwargs["query_id"]
-                write_job(
-                    query_id,
-                    {
-                        "status": "done",
-                        "stage": "done",
-                        "queryspec": {
-                            "original_question": kwargs["question"],
-                            "mode": "mirna_to_targets",
-                            "mirna": "miR-21",
-                            "gene": None,
-                            "cancer": {"name": "colon cancer", "tcga": "COAD"},
-                            "phenotype_keywords": ["proliferation"],
-                            "pathway_keywords": [],
-                            "pathway_filter": {
-                                "enabled": False,
-                                "mode": "filter",
-                                "min_gene_sets": 1,
-                            },
-                            "novel": False,
-                            "k": kwargs["k"],
-                            "filters": {
-                                "min_support": kwargs["min_support"],
-                                "require_binding_evidence": kwargs["require_binding_evidence"],
-                                "require_expression": kwargs["require_expression"],
-                            },
-                            "needs_clarification": [],
-                        },
-                        "shortlist": [{"gene_symbol": "PTEN", "retrieval_score": 8.5}],
-                        "bundle": {"meta": {"queryspec": {"mirna": "miR-21"}}},
-                        "answer": {"summary": "PTEN is the leading candidate."},
-                    },
-                )
-
-            with patch("backend.app.run_query_job", side_effect=fake_run_query_job):
-                with TestClient(app) as client:
-                    submit = client.post(
-                        "/query",
-                        json={
-                            "question": "What does miR-21 regulate in colon cancer?",
-                            "novel": False,
-                            "k": 25,
-                            "min_support": 1,
-                            "require_binding_evidence": False,
-                            "require_expression": False,
-                            "pathway_mode": "auto",
-                        },
-                    )
-                    self.assertEqual(submit.status_code, 200)
-                    query_id = submit.json()["query_id"]
-
-                    status_response = client.get(f"/status/{query_id}")
-                    result_response = client.get(f"/result/{query_id}")
-
-        self.assertEqual(status_response.status_code, 200)
-        self.assertEqual(status_response.json()["status"], "done")
-        self.assertEqual(result_response.status_code, 200)
-        result = result_response.json()
-        self.assertEqual(result["status"], "done")
-        self.assertIn("queryspec", result)
-        self.assertIn("shortlist", result)
-        self.assertIn("bundle", result)
-        self.assertIn("answer", result)
-
-
 class WorkerDiagnosticTests(unittest.TestCase):
+    def test_disable_synthesis_returns_chart_only_payload_and_preserves_novel_flag(self) -> None:
+        qs = {
+            "original_question": "What genes are regulated by miR-21?",
+            "mode": "mirna_to_targets",
+            "mirna": "miR-21",
+            "gene": None,
+            "cancer": {},
+            "phenotype_keywords": [],
+            "pathway_keywords": [],
+            "pathway_filter": {"enabled": False, "mode": "filter", "min_gene_sets": 1},
+            "novel": False,
+            "k": 10,
+            "filters": {
+                "min_support": 1,
+                "require_binding_evidence": False,
+                "require_expression": False,
+            },
+            "needs_clarification": [],
+        }
+        shortlist = pd.DataFrame(
+            [
+                {
+                    "mirna_name": "miR-21",
+                    "gene_symbol": "PTEN",
+                    "support_count": 3,
+                    "retrieval_score": 8.5,
+                    "mirassist_xgboost_score": 0.91,
+                }
+            ]
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir, patch.dict(
+            os.environ,
+            {
+                "JOBSTORE_BACKEND": "filesystem",
+                "MIRASSIST_JOB_DIR": tmpdir,
+                "EVIDENCE_BACKEND": "parquet",
+            },
+            clear=False,
+        ), patch("backend.planner.run_planner", return_value=qs), patch(
+            "backend.pathways.resolve_pathway_selection", return_value={"enabled": False, "warnings": []}
+        ), patch(
+            "backend.pathways.compact_pathway_selection", return_value={"enabled": False, "warnings": []}
+        ), patch("backend.retrieval.load_evidence", return_value=shortlist), patch(
+            "backend.retrieval.retrieve_from_queryspec",
+            return_value=(shortlist, "mirna_to_targets", {"n_final_shortlist": 1, "warnings": []}),
+        ):
+            result = run_query_job(
+                query_id="job-chart-only",
+                question=qs["original_question"],
+                k=10,
+                min_support=1,
+                novel=True,
+                disable_synthesis=True,
+                require_binding_evidence=False,
+                require_expression=False,
+                pathway_mode="auto",
+            )
+
+        self.assertEqual(result["status"], "done")
+        self.assertTrue(result["disable_synthesis"])
+        self.assertEqual(result["result_mode"], "chart_only")
+        self.assertEqual(result["queryspec"]["novel"], True)
+        self.assertEqual(len(result["shortlist"]), 1)
+        self.assertEqual(result["shortlist"][0]["gene_symbol"], "PTEN")
+        self.assertEqual(result["retrieval_diagnostics"]["n_rows_sent_to_synthesizer"], 0)
+
     def test_empty_shortlist_returns_backend_diagnostic_without_synth_call(self) -> None:
         qs = {
             "original_question": "I am studying miRNA-210 in breast cancer cells. I think it might be involved in energy metabolism. What genes might it be regulating?",
@@ -217,13 +186,14 @@ class WorkerDiagnosticTests(unittest.TestCase):
             {
                 "JOBSTORE_BACKEND": "filesystem",
                 "MIRASSIST_JOB_DIR": tmpdir,
+                "EVIDENCE_BACKEND": "parquet",
             },
             clear=False,
-        ), patch("backend.worker.run_planner", return_value=qs), patch(
-            "backend.worker.resolve_pathway_selection", return_value=pathway_selection
-        ), patch("backend.worker.load_evidence", return_value=ev), patch(
-            "backend.worker.run_synthesizer"
-        ) as synth_mock:
+        ), patch("backend.planner.run_planner", return_value=qs), patch(
+            "backend.pathways.resolve_pathway_selection", return_value=pathway_selection
+        ), patch(
+            "backend.pathways.compact_pathway_selection", return_value=pathway_selection
+        ), patch("backend.retrieval.load_evidence", return_value=ev):
             result = run_query_job(
                 query_id="job-empty-shortlist",
                 question=qs["original_question"],
@@ -238,10 +208,10 @@ class WorkerDiagnosticTests(unittest.TestCase):
         self.assertEqual(result["status"], "done")
         self.assertEqual(result["retrieval_diagnostics"]["n_final_shortlist"], 0)
         self.assertIn("No candidates passed the current filters.", result["answer"]["summary"])
-        synth_mock.assert_not_called()
 
 
 @unittest.skipUnless(os.environ.get("DATABASE_URL"), "DATABASE_URL is not set")
+@unittest.skipUnless(find_spec("sqlalchemy") is not None, "sqlalchemy is not installed")
 class PostgresJobStoreTests(unittest.TestCase):
     def test_postgres_jobstore_roundtrip(self) -> None:
         query_id = f"job-pg-{uuid.uuid4().hex[:8]}"

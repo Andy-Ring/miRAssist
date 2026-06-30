@@ -40,6 +40,10 @@ PRODUCTION_EVIDENCE_COLUMNS: Tuple[str, ...] = (
     "mirna_name_normalized",
     "gene_symbol_normalized",
     "transcript_id",
+    "mirassist_xgboost_score",
+    "best_backend_model_score",
+    "learned_score",
+    "model_score",
     "learned_score_xgb_raw_v1",
     "learned_score_xgb_raw_nomissing_v1",
     "learned_score_model_version",
@@ -134,7 +138,6 @@ PRODUCTION_EVIDENCE_COLUMNS: Tuple[str, ...] = (
     "targetscan_context_score",
     "targetscan_context_score_support_percentile",
     "targetscan_context_score_percentile",
-    "targetscan_context_score_percentile_percentile",
     "targetscan_aggregate_context_score",
     "targetscan_aggregate_context_score_percentile",
     "targetscan_conserved_site",
@@ -233,7 +236,7 @@ def load_evidence(
 
     Notes:
       - Drops duplicate column labels if present.
-      - Designed for single-process Colab/uvicorn usage.
+      - Designed for single-process direct app usage.
     """
     global _EVIDENCE_CACHE, _EVIDENCE_SOURCE
 
@@ -435,9 +438,10 @@ def build_postgres_candidate_query(
         )
 
     learned_score_column = get_learned_score_column()
+    selected_db_score_column = _resolve_score_column_from_available(available, learned_score_column)
     order_columns: List[str] = []
-    if get_use_learned_score() and learned_score_column in available:
-        order_columns.append(f"{quote_identifier(learned_score_column)} DESC NULLS LAST")
+    if get_use_learned_score() and selected_db_score_column and selected_db_score_column != "retrieval_score":
+        order_columns.append(f"{quote_identifier(selected_db_score_column)} DESC NULLS LAST")
         order_columns.extend(_postgres_rank_tiebreak_columns(available))
         if "retrieval_score" in available:
             order_columns.append('"retrieval_score" DESC NULLS LAST')
@@ -462,7 +466,7 @@ def build_postgres_candidate_query(
     diagnostics = {
         "evidence_backend": "postgres",
         "db_candidate_limit": int(get_db_candidate_limit()),
-        "learned_score_column": learned_score_column,
+        "learned_score_column": selected_db_score_column or learned_score_column,
         "query_direction": direction,
         "sql_mirna_norm_column": mirna_norm_col,
         "sql_gene_norm_column": gene_norm_col,
@@ -631,6 +635,42 @@ def _safe_int_col(df: pd.DataFrame, col: str, default: int = 0) -> pd.Series:
     return pd.to_numeric(df[col], errors="coerce").fillna(default).astype(int)
 
 
+def _candidate_score_columns(configured_score_column: str) -> List[str]:
+    candidates: List[str] = ["mirassist_xgboost_score"]
+    configured = str(configured_score_column or "").strip()
+    if configured:
+        candidates.append(configured)
+    candidates.extend(
+        [
+            "best_backend_model_score",
+            "learned_score",
+            "model_score",
+            "overall_evidence_support_percentile",
+            "retrieval_score",
+        ]
+    )
+    out: List[str] = []
+    for candidate in candidates:
+        if candidate and candidate not in out:
+            out.append(candidate)
+    return out
+
+
+def _resolve_score_column(df: pd.DataFrame, configured_score_column: str) -> Optional[str]:
+    for candidate in _candidate_score_columns(configured_score_column):
+        if candidate in df.columns:
+            return candidate
+    return None
+
+
+def _resolve_score_column_from_available(available_columns: Iterable[str], configured_score_column: str) -> Optional[str]:
+    available = {str(col) for col in available_columns}
+    for candidate in _candidate_score_columns(configured_score_column):
+        if candidate in available:
+            return candidate
+    return None
+
+
 def apply_learned_score_ranking(
     df: pd.DataFrame,
     learned_score_column: str,
@@ -653,14 +693,16 @@ def apply_learned_score_ranking(
         "learned_score_enabled": False,
         "retrieval_ranking_mode": "manual",
         "learned_score_column": learned_score_column,
+        "score_column_used": "retrieval_score",
         "learned_score_present_count": 0,
         "learned_score_missing_count": int(len(ranked)),
     }
 
     ranked = ranked.assign(
         retrieval_rank_score=retrieval_score.astype(float),
-        learned_score_used=pd.Series(np.zeros(len(ranked), dtype=int), index=ranked.index),
+        learned_score_used=retrieval_score.astype(float),
         _learned_score_missing=pd.Series(np.ones(len(ranked), dtype=int), index=ranked.index),
+        score_column_used=pd.Series(["retrieval_score"] * len(ranked), index=ranked.index, dtype="object"),
         _retrieval_support_tiebreak=support_tiebreak.astype(float),
         _retrieval_mirdb_tiebreak=mirdb_tiebreak.astype(float),
         _retrieval_ts_tiebreak=ts_tiebreak.astype(float),
@@ -683,9 +725,13 @@ def apply_learned_score_ranking(
         )
         return ranked, diagnostics
 
-    if learned_score_column not in ranked.columns:
+    selected_score_column = _resolve_score_column(ranked, learned_score_column)
+    diagnostics["learned_score_column"] = selected_score_column or learned_score_column
+    diagnostics["score_column_used"] = selected_score_column or "retrieval_score"
+
+    if selected_score_column is None:
         diagnostics["warnings"] = [
-            f"Configured learned score column '{learned_score_column}' was not present in the evidence rows; using manual retrieval_score ranking."
+            "No preferred learned-score columns were present in the evidence rows; using manual retrieval_score ranking."
         ]
         ranked = ranked.sort_values(
             [
@@ -701,12 +747,18 @@ def apply_learned_score_ranking(
         )
         return ranked, diagnostics
 
-    learned_score_values = pd.to_numeric(ranked[learned_score_column], errors="coerce")
+    learned_score_values = pd.to_numeric(ranked[selected_score_column], errors="coerce")
     learned_score_missing = learned_score_values.isna()
+    score_column_used = pd.Series(
+        np.where(learned_score_missing.to_numpy(), "retrieval_score", selected_score_column),
+        index=ranked.index,
+        dtype="object",
+    )
     ranked = ranked.assign(
         retrieval_rank_score=learned_score_values.where(~learned_score_missing, retrieval_score).astype(float),
-        learned_score_used=(~learned_score_missing).astype(int),
+        learned_score_used=learned_score_values.where(~learned_score_missing, retrieval_score).astype(float),
         _learned_score_missing=learned_score_missing.astype(int),
+        score_column_used=score_column_used,
     )
     ranked = ranked.sort_values(
         [
@@ -723,8 +775,8 @@ def apply_learned_score_ranking(
     )
     diagnostics.update(
         {
-            "learned_score_enabled": True,
-            "retrieval_ranking_mode": f"learned:{learned_score_column}",
+            "learned_score_enabled": bool(selected_score_column != "retrieval_score"),
+            "retrieval_ranking_mode": f"learned:{selected_score_column}",
             "learned_score_present_count": int((~learned_score_missing).sum()),
             "learned_score_missing_count": int(learned_score_missing.sum()),
         }
@@ -1397,7 +1449,14 @@ def _collapse_pair_rows(df: pd.DataFrame) -> pd.DataFrame:
     if "gene_pathway_hits" in df.columns:
         agg["gene_pathway_hits"] = "max"
 
-    for c in ["learned_score_xgb_raw_v1", "learned_score_xgb_raw_nomissing_v1"]:
+    for c in [
+        "mirassist_xgboost_score",
+        "best_backend_model_score",
+        "learned_score",
+        "model_score",
+        "learned_score_xgb_raw_v1",
+        "learned_score_xgb_raw_nomissing_v1",
+    ]:
         if c in df.columns:
             agg[c] = "max"
     for c in ["learned_score_model_version", "learned_score_feature_set", "learned_score_updated_at"]:
@@ -1726,7 +1785,7 @@ def retrieve_from_queryspec(
     pathway_selection: Optional[Dict[str, Any]] = None,
 ) -> Tuple[pd.DataFrame, str, Dict[str, Any]]:
     """
-    Wrapper expected by backend/app.py:
+    QuerySpec wrapper used by the direct app:
       queryspec -> RetrievalConfig -> retrieve_candidates
     """
     token = queryspec.get("mirna") or queryspec.get("gene") or queryspec.get("query_token")

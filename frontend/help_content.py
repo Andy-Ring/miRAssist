@@ -1,10 +1,6 @@
 from __future__ import annotations
 
 
-def should_show_api_connection_controls(app_mode: str) -> bool:
-    return str(app_mode or "").strip().lower() == "api"
-
-
 def get_normal_debug_sections() -> list[str]:
     return [
         "Planner output (QuerySpec)",
@@ -35,8 +31,7 @@ How cancer context works:
 - If included, a cancer-type specific anticorrelation feature will be added to the query.
 
 How to interpret results:
-- `k` is the number of evidence cards/candidates passed to the synthesizer after backend filtering and scoring.
-- By default, miRAssist prints the top 5 ranked results from that candidate pool.
+- miRAssist retrieves and ranks candidate interactions from the evidence database, then returns the top candidates as a chart.
 - Evidence support count = number of distinct evidence families, not number of raw features.
 - Evidence support count measures breadth, not strength.
 - Percentiles show whether a feature or family signal is unusually strong across the database.

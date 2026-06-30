@@ -561,7 +561,7 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
 
 def run_planner(question: str) -> Dict[str, Any]:
     """
-    Main entrypoint used by the FastAPI backend.
+    Main planner entrypoint for the direct Streamlit app.
     """
     from backend.llm_backend import chat
 

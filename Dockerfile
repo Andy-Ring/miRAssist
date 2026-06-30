@@ -5,10 +5,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY backend/requirements.txt /tmp/requirements.txt
+COPY requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
 COPY backend /app/backend
+COPY frontend /app/frontend
 COPY data /app/data
+COPY app.py /app/app.py
 
-CMD sh -c "uvicorn backend.app:app --host 0.0.0.0 --port ${PORT:-8000}"
+CMD streamlit run app.py --server.port ${PORT:-8000} --server.address 0.0.0.0
