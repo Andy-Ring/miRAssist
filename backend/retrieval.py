@@ -329,6 +329,14 @@ def _select_production_evidence_columns(available_columns: Iterable[str], tcga: 
     return selected
 
 
+def _first_available_column(available_columns: Iterable[str], candidates: Iterable[str]) -> Optional[str]:
+    available = {str(col) for col in available_columns}
+    for candidate in candidates:
+        if str(candidate) in available:
+            return str(candidate)
+    return None
+
+
 def _sql_in_clause(column_sql: str, param_prefix: str, values: List[str], params: Dict[str, Any]) -> str:
     placeholders: List[str] = []
     for idx, value in enumerate(values):
@@ -371,10 +379,14 @@ def build_postgres_candidate_query(
     available = {str(col) for col in available_columns}
     selected_columns = _select_production_evidence_columns(available, cfg.tcga)
     required_columns = {"mirna_name", "gene_symbol", "support_count"}
+    mirna_norm_col = _first_available_column(available, ("mirna_name_norm", "mirna_name_normalized"))
+    gene_norm_col = _first_available_column(available, ("gene_symbol_norm", "gene_symbol_normalized"))
     if direction == "mirna_to_targets":
-        required_columns.add("mirna_name_norm")
+        if mirna_norm_col is None:
+            required_columns.add("mirna_name_norm")
     else:
-        required_columns.add("gene_symbol_norm")
+        if gene_norm_col is None:
+            required_columns.add("gene_symbol_norm")
     missing_required = sorted(col for col in required_columns if col not in selected_columns)
     if missing_required:
         raise RuntimeError(
@@ -403,23 +415,23 @@ def build_postgres_candidate_query(
         mirna_bits: List[str] = []
         if mirna_variants:
             mirna_bits.append(
-                _sql_in_clause(quote_identifier("mirna_name_norm"), "mirna_norm", mirna_variants, params)
+                _sql_in_clause(quote_identifier(str(mirna_norm_col)), "mirna_norm", mirna_variants, params)
             )
         if mirna_prefix_patterns:
             for idx, pattern in enumerate(mirna_prefix_patterns):
                 param_name = f"mirna_prefix_{idx}"
                 params[param_name] = pattern
-                mirna_bits.append(f"{quote_identifier('mirna_name_norm')} LIKE :{param_name}")
+                mirna_bits.append(f"{quote_identifier(str(mirna_norm_col))} LIKE :{param_name}")
         where_clauses.append("(" + " OR ".join(mirna_bits) + ")" if mirna_bits else "1 = 0")
     else:
         params["gene_norm"] = _normalize_gene_symbol(query_token)
-        where_clauses.append(f"{quote_identifier('gene_symbol_norm')} = :gene_norm")
+        where_clauses.append(f"{quote_identifier(str(gene_norm_col))} = :gene_norm")
 
     pathway_selection = cfg.pathway_selection or {}
-    if bool(pathway_selection.get("enabled")) and cfg.pathway_gene_set and "gene_symbol_norm" in available:
+    if bool(pathway_selection.get("enabled")) and cfg.pathway_gene_set and gene_norm_col is not None:
         pathway_genes = sorted({_normalize_gene_symbol(gene) for gene in cfg.pathway_gene_set if str(gene or "").strip()})
         where_clauses.append(
-            _sql_in_clause(quote_identifier("gene_symbol_norm"), "pathway_gene", pathway_genes, params)
+            _sql_in_clause(quote_identifier(str(gene_norm_col)), "pathway_gene", pathway_genes, params)
         )
 
     learned_score_column = get_learned_score_column()
@@ -452,6 +464,8 @@ def build_postgres_candidate_query(
         "db_candidate_limit": int(get_db_candidate_limit()),
         "learned_score_column": learned_score_column,
         "query_direction": direction,
+        "sql_mirna_norm_column": mirna_norm_col,
+        "sql_gene_norm_column": gene_norm_col,
         "sql_selected_columns": list(selected_columns),
         "sql_order_columns": list(order_columns),
         "primary_mirna_variants": list(mirna_variants or []),
@@ -982,8 +996,9 @@ def _filter_mirna_rows(df: pd.DataFrame, raw_mirna: str) -> Tuple[pd.DataFrame, 
     fallback_variants = list(expansion.get("fallback_variants") or [])
     prefix_patterns = _mirna_prefix_fallback_patterns(raw_mirna)
 
-    if "mirna_name_norm" in df.columns:
-        norm_series = df["mirna_name_norm"].astype(str).str.strip().str.lower()
+    normalized_mirna_col = _first_available_column(df.columns, ("mirna_name_norm", "mirna_name_normalized"))
+    if normalized_mirna_col is not None:
+        norm_series = df[normalized_mirna_col].astype(str).str.strip().str.lower()
         primary_mask = norm_series.isin([value.lower() for value in primary_variants])
         filtered = df.loc[primary_mask].copy()
         diagnostics["n_rows_primary"] = int(len(filtered))
@@ -1011,6 +1026,7 @@ def _filter_mirna_rows(df: pd.DataFrame, raw_mirna: str) -> Tuple[pd.DataFrame, 
 
         matched = filtered["mirna_name"].dropna().astype(str).unique().tolist() if "mirna_name" in filtered.columns else []
         diagnostics["matched_mirna_names"] = matched[:20]
+        diagnostics["normalized_mirna_column_used"] = normalized_mirna_col
         return filtered, diagnostics
 
     matches = _match_mirna_names_for_table(raw_mirna, df["mirna_name"])
