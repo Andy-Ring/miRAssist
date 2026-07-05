@@ -26,18 +26,25 @@ from frontend.help_content import (
 FRONTEND_DIR = Path(__file__).resolve().parent
 
 
+def _startup_log(message: str) -> None:
+    print(f"[miRAssist] {message}", flush=True)
+
+
 def render_sidebar_logo() -> None:
     logo_path = FRONTEND_DIR / "assets" / "miRAssist_logo.png"
     if not logo_path.exists():
+        _startup_log(f"sidebar logo missing at {logo_path}")
         return
 
     try:
         st.image(str(logo_path), use_container_width=True)
+        _startup_log("sidebar logo rendered with use_container_width")
     except TypeError:
         # Older hosted Streamlit builds may only support the legacy keyword.
         st.image(str(logo_path), use_column_width=True)
+        _startup_log("sidebar logo rendered with use_column_width fallback")
     except Exception as exc:
-        print(f"[WARN] Failed to render sidebar logo: {exc}")
+        _startup_log(f"sidebar logo render failed: {exc}")
 
 
 def load_local_dotenv() -> None:
@@ -61,12 +68,15 @@ def load_local_dotenv() -> None:
 
 
 load_local_dotenv()
+_startup_log("local dotenv load attempted")
 
 
 st.set_page_config(page_title="miRAssist", layout="wide")
+_startup_log("set_page_config complete")
 
 with st.sidebar:
     render_sidebar_logo()
+_startup_log("sidebar context entered")
 
 
 st.markdown(
@@ -105,6 +115,7 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+_startup_log("global stylesheet injected")
 
 
 APP_NAME = "miRAssist"
@@ -560,6 +571,7 @@ def run_direct_mode(submit_payload: dict) -> None:
         )
 st.title("Welcome to miRAssist")
 st.caption("Enter your natural language prompt below to query the miRNA-target database")
+_startup_log("title and caption rendered")
 
 with st.sidebar:
     with st.expander("How to use miRAssist", expanded=False):
