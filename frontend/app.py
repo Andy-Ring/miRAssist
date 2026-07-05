@@ -17,8 +17,6 @@ from backend.config import (
     get_debug_max_rows,
     get_debug_ui,
 )
-from backend.jobstore import read_job
-from backend.worker import run_query_job
 from frontend.help_content import (
     get_about_evidence_markdown,
     get_how_to_use_markdown,
@@ -26,6 +24,20 @@ from frontend.help_content import (
 
 
 FRONTEND_DIR = Path(__file__).resolve().parent
+
+
+def render_sidebar_logo() -> None:
+    logo_path = FRONTEND_DIR / "assets" / "miRAssist_logo.png"
+    if not logo_path.exists():
+        return
+
+    try:
+        st.image(str(logo_path), use_container_width=True)
+    except TypeError:
+        # Older hosted Streamlit builds may only support the legacy keyword.
+        st.image(str(logo_path), use_column_width=True)
+    except Exception as exc:
+        print(f"[WARN] Failed to render sidebar logo: {exc}")
 
 
 def load_local_dotenv() -> None:
@@ -54,10 +66,7 @@ load_local_dotenv()
 st.set_page_config(page_title="miRAssist", layout="wide")
 
 with st.sidebar:
-    st.image(
-        str(FRONTEND_DIR / "assets" / "miRAssist_logo.png"),
-        use_container_width=True,
-    )
+    render_sidebar_logo()
 
 
 st.markdown(
@@ -505,6 +514,9 @@ def render_shortlist_chart(shortlist: list[dict]) -> None:
 
 
 def run_direct_mode(submit_payload: dict) -> None:
+    from backend.jobstore import read_job
+    from backend.worker import run_query_job
+
     query_id = uuid.uuid4().hex[:16]
     st.session_state["last_query_id"] = query_id
     st.session_state["last_submit_response"] = {"query_id": query_id, "mode": "direct"}
