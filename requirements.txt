@@ -1,4 +1,6 @@
-streamlit>=1.31
+# Posit Connect Cloud appears to load the app shell on newer Streamlit builds
+# without ever establishing a live session. Pin to a conservative stable range.
+streamlit>=1.31,<1.45
 pandas>=2.0
 numpy>=1.26
 requests>=2.31
