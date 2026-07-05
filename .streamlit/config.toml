@@ -2,6 +2,12 @@
 headless = true
 enableCORS = false
 enableXsrfProtection = false
+enableWebsocketCompression = false
+fileWatcherType = "none"
+runOnSave = false
 
 [browser]
 gatherUsageStats = false
+
+[logger]
+level = "debug"
