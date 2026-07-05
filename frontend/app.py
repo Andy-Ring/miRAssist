@@ -10,7 +10,6 @@ import time
 import traceback
 import uuid
 
-import altair as alt
 import pandas as pd
 import streamlit as st
 
@@ -474,26 +473,34 @@ def render_shortlist_chart(shortlist: list[dict]) -> None:
         st.info("No chartable ranked candidates were returned.")
         return
 
-    tooltip = [
-        alt.Tooltip("candidate_label:N", title="Candidate"),
-        alt.Tooltip(f"{score_column}:Q", title=score_column, format=".4f"),
-    ]
-    if "support_count" in chart_df.columns:
-        tooltip.append(alt.Tooltip("support_count:Q", title="Support count", format=".0f"))
-    if "score_column_used" in chart_df.columns:
-        tooltip.append(alt.Tooltip("score_column_used:N", title="Score column used"))
+    try:
+        import altair as alt
 
-    chart = (
-        alt.Chart(chart_df)
-        .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
-        .encode(
-            x=alt.X(f"{score_column}:Q", title=score_column),
-            y=alt.Y("candidate_label:N", sort="-x", title=None),
-            tooltip=tooltip,
+        tooltip = [
+            alt.Tooltip("candidate_label:N", title="Candidate"),
+            alt.Tooltip(f"{score_column}:Q", title=score_column, format=".4f"),
+        ]
+        if "support_count" in chart_df.columns:
+            tooltip.append(alt.Tooltip("support_count:Q", title="Support count", format=".0f"))
+        if "score_column_used" in chart_df.columns:
+            tooltip.append(alt.Tooltip("score_column_used:N", title="Score column used"))
+
+        chart = (
+            alt.Chart(chart_df)
+            .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
+            .encode(
+                x=alt.X(f"{score_column}:Q", title=score_column),
+                y=alt.Y("candidate_label:N", sort="-x", title=None),
+                tooltip=tooltip,
+            )
+            .properties(height=max(280, 32 * len(chart_df)))
         )
-        .properties(height=max(280, 32 * len(chart_df)))
-    )
-    st.altair_chart(chart, use_container_width=True)
+        st.altair_chart(chart, use_container_width=True)
+    except Exception:
+        # Posit/hosted environments may provide Streamlit without a direct Altair import.
+        fallback_df = chart_df.loc[:, ["candidate_label", score_column]].set_index("candidate_label")
+        st.bar_chart(fallback_df, use_container_width=True)
+
     st.caption(f"Showing the top {len(chart_df)} retrieved candidates ranked by `{score_column}`.")
 
 
