@@ -1,6 +1,9 @@
 # Posit Connect Cloud appears to load the app shell on newer Streamlit builds
 # without ever establishing a live session. Pin to a conservative stable range.
 streamlit>=1.31,<1.45
+# Newer uvicorn releases switch Streamlit onto the websockets-sansio backend,
+# which is the code path rejecting websocket upgrades on Posit for this app.
+uvicorn<0.44
 pandas>=2.0
 numpy>=1.26
 requests>=2.31

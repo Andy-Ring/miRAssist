@@ -32,9 +32,25 @@ def _import_report(module_name: str) -> None:
         module = importlib.import_module(module_name)
         version = getattr(module, "__version__", "<no __version__>")
         print(f"status=ok version={version}")
+        real_version = getattr(module, "__miassist_real_uvicorn_version__", None)
+        if real_version:
+            print(f"real_version={real_version}")
         module_file = getattr(module, "__file__", None)
         if module_file:
             print(f"path={module_file}")
+    except Exception as exc:
+        print(f"status=error type={type(exc).__name__} message={exc}")
+        print(traceback.format_exc())
+
+
+def _print_streamlit_server_report() -> None:
+    print("\n[module] streamlit.web.server.starlette.starlette_server")
+    try:
+        from streamlit.web.server.starlette import starlette_server
+
+        protocol = starlette_server._get_websocket_protocol()
+        print(f"status=ok websocket_protocol={protocol}")
+        print(f"path={starlette_server.__file__}")
     except Exception as exc:
         print(f"status=error type={type(exc).__name__} message={exc}")
         print(traceback.format_exc())
@@ -70,6 +86,7 @@ def main() -> int:
     _print_header("Package Imports")
     for module_name in [
         "streamlit",
+        "uvicorn",
         "pandas",
         "numpy",
         "pyarrow",
@@ -80,6 +97,7 @@ def main() -> int:
         "altair",
     ]:
         _import_report(module_name)
+    _print_streamlit_server_report()
 
     _print_header("App Imports")
     for module_name in [

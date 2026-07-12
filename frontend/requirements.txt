@@ -1,5 +1,7 @@
 # Keep the hosted frontend on the same conservative Streamlit range used at repo root.
 streamlit>=1.31,<1.45
+# Match the repo root pin so hosted rebuilds stay on Streamlit's legacy websocket backend.
+uvicorn<0.44
 pandas>=2.0
 numpy>=1.26
 requests>=2.31

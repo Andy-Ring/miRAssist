@@ -34,6 +34,8 @@ Posit should run the app with:
 streamlit run app.py
 ```
 
+The repo also includes a local [uvicorn shim](C:\Users\andym\OneDrive - University of Georgia\Documents\miRAssist\uvicorn\__init__.py), which forces Streamlit onto its legacy websocket backend before the server boots. This is a deployment guard for Posit Connect Cloud, where the newer `uvicorn` websocket backend was returning `403 Forbidden` during the `/_stcore/stream` upgrade and leaving the app stuck on the loading skeleton.
+
 Preferred Posit entrypoint: `app.py`.
 
 Do not set the primary file to `frontend/app.py` unless necessary. If Posit is already configured to launch `frontend/app.py`, the app now bootstraps the repository root onto `sys.path` so sibling imports like `backend.config` still work.
