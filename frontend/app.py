@@ -79,36 +79,6 @@ with st.sidebar:
 _startup_log("sidebar context entered")
 
 
-st.markdown(
-    """
-    <style>
-    :root {
-        --mir-green: #5DBB63;
-        --mir-teal: #2CA6A4;
-    }
-
-    .stButton>button {
-        background-color: var(--mir-teal);
-        color: black;
-        border-radius: 8px;
-        font-weight: 600;
-    }
-
-    .stButton>button:hover {
-        background-color: var(--mir-green);
-        color: black;
-    }
-
-    section[data-testid="stSidebar"] {
-        background-color: #111827;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-_startup_log("global stylesheet injected")
-
-
 APP_NAME = "miRAssist"
 APP_VERSION = "0.9.2"
 APP_AUTHOR = "Andy Ring"
@@ -389,36 +359,10 @@ def typewriter_markdown(md: str, container, cps: int = 60, chunk: str = "word"):
 
 
 def sidebar_footer(author: str, version: str):
-    st.sidebar.markdown(
-        """
-        <style>
-        section[data-testid="stSidebar"] > div:first-child {
-            display: flex;
-            flex-direction: column;
-            height: 100%;
-        }
-        .sidebar-footer {
-            margin-top: auto;
-            padding-top: 1rem;
-            font-size: 0.85rem;
-            opacity: 0.75;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.sidebar.markdown(
-        f"""
-        <div class="sidebar-footer">
-            <hr />
-            <div><strong>{APP_NAME}</strong></div>
-            <div>{author}</div>
-            <div>Version {version}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.sidebar.divider()
+    st.sidebar.caption(APP_NAME)
+    st.sidebar.caption(author)
+    st.sidebar.caption(f"Version {version}")
 
 
 def clear_session_outputs() -> None:
