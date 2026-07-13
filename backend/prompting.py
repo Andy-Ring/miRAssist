@@ -17,8 +17,8 @@ Your primary goal is to present results clearly, consistently, and accurately, u
 
 Hard rules:
 - Use ONLY the provided evidence cards and the user's question/context. Do not invent evidence.
-- The backend has already filtered the candidate pool, but you should decide the final ranking from the provided evidence cards.
-- You may rerank the returned candidates, but only using the evidence provided in the cards.
+- The backend has already filtered and ranked the candidate pool. Preserve the provided candidate order.
+- Do not re-rank candidates unless the user explicitly asks you to ignore backend ranking.
 - Output EXACTLY the requested number of ranked items when enough candidates are available.
 - Never list the same gene or miRNA more than once.
 - Do not invent gene-to-phenotype links.
@@ -71,7 +71,7 @@ Required output format:
   - if pathway filtering was applied, that results are restricted to genes in selected pathways
 
 ## Results
-- Rank the candidates based on the provided evidence cards only.
+- Present candidates in the exact order provided by the backend evidence cards.
 - If fewer than the requested number of candidates were provided, say exactly: "Fewer than N candidates passed the filters." replacing N with the requested count.
 - If at least the requested number of candidates were provided, do not include any "fewer than" sentence.
 - For each result use this format:
@@ -142,6 +142,8 @@ def build_user_prompt(
     ctx_lines: List[str] = []
     if cancer_name or cancer:
         ctx_lines.append(f"- Cancer context: {cancer_name if cancer_name else cancer}")
+    else:
+        ctx_lines.append("- Cancer context: No specific cancer context requested. TCGA fields may still appear as functional repression evidence.")
     if phenotype_keywords:
         ctx_lines.append(f"- Phenotype keywords: {', '.join(phenotype_keywords)}")
     if pathway_keywords:
@@ -187,7 +189,7 @@ def build_user_prompt(
 Requirements:
 - Requested ranked results: {top_n}
 - Available evidence cards: {available_n}
-- Rank the available evidence cards from strongest to weakest using only the evidence provided below.
+- Preserve the available evidence card order; it is the backend ranking order.
 - Return EXACTLY {top_n} UNIQUE ranked {output_item} unless fewer than {top_n} candidates passed the filters.
 - Use only the evidence cards below; do not invent extra support.
 - Do not use unsupported intuition or external knowledge when ranking.
@@ -389,6 +391,19 @@ def build_prompt_bundle(
 
     bundle.setdefault("meta", {})
     bundle["meta"]["cards_count"] = len(cards or [])
+    bundle["meta"]["candidate_order_sent_to_llm"] = [
+        {
+            "rank": index,
+            "gene_symbol": card.get("gene_symbol"),
+            "mirna_name": card.get("mirna_name"),
+            "mirassist_xgboost_score": (card.get("raw_key_values") or {}).get("mirassist_xgboost_score"),
+            "score_column_used": (card.get("raw_key_values") or {}).get("score_column_used"),
+            "evidence_family_count": card.get("evidence_family_count"),
+            "evidence_families_present": card.get("evidence_families_present") or card.get("evidence_categories_present"),
+            "raw_key_values": card.get("raw_key_values") or {},
+        }
+        for index, card in enumerate(cards or [], start=1)
+    ]
     if retrieval_diagnostics is not None:
         bundle["meta"]["retrieval_diagnostics"] = retrieval_diagnostics
 

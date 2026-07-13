@@ -628,6 +628,32 @@ if result:
                     "in the result payload, or it is stored under a response key not yet handled."
                 )
 
+        with st.expander("Retrieval debug", expanded=False):
+            retrieval_diagnostics = result.get("retrieval_diagnostics") or {}
+            debug_summary = {
+                "supabase_table_name": retrieval_diagnostics.get("supabase_table_name"),
+                "query_direction": retrieval_diagnostics.get("query_direction")
+                or retrieval_diagnostics.get("direction"),
+                "normalized_mirna": retrieval_diagnostics.get("variants_used")
+                or retrieval_diagnostics.get("exact_mirna_variants_used")
+                or retrieval_diagnostics.get("query_mirna_normalized"),
+                "normalized_mirna_column": retrieval_diagnostics.get("sql_mirna_norm_column")
+                or retrieval_diagnostics.get("normalized_mirna_column_used"),
+                "sort_column_used": retrieval_diagnostics.get("score_column_used")
+                or retrieval_diagnostics.get("sort_column_used")
+                or retrieval_diagnostics.get("learned_score_column"),
+                "rows_returned": retrieval_diagnostics.get("n_rows_fetched_from_db")
+                or retrieval_diagnostics.get("n_after_query_filter"),
+                "columns_returned": retrieval_diagnostics.get("sql_returned_column_count")
+                or retrieval_diagnostics.get("sql_selected_column_count"),
+                "sql_order_columns": retrieval_diagnostics.get("sql_order_columns"),
+            }
+            st.json(debug_summary)
+            prompt_debug = result.get("prompt_bundle_debug") or {}
+            if prompt_debug.get("candidate_order_sent_to_llm"):
+                st.markdown("#### Candidate order sent to synthesis")
+                st.json(prompt_debug["candidate_order_sent_to_llm"])
+
         with st.expander("Evidence shortlist", expanded=False):
             if isinstance(shortlist, list) and len(shortlist) > 0:
                 max_rows = max(1, int(get_debug_max_rows()))
@@ -637,6 +663,13 @@ if result:
                     "mirna_name",
                     "mirassist_xgboost_score",
                     "score_column_used",
+                    "evidence_family_count",
+                    "sequence_complementarity_available",
+                    "thermodynamic_stability_available",
+                    "sequence_conservation_available",
+                    "target_site_accessibility_available",
+                    "functional_binding_available",
+                    "functional_repression_available",
                     "learned_score_xgb_raw_v1",
                     "learned_score_xgb_raw_nomissing_v1",
                     "learned_score_used",
@@ -645,10 +678,17 @@ if result:
                     "learned_score_model_version",
                     "learned_score_feature_set",
                     "support_count",
-                    "mirdb_best_score",
-                    "ts_context_strength",
-                    "clip_exp_sum",
-                    "best_mfe",
+                    "seed_match_type",
+                    "n_seed_sites",
+                    "rnahybrid_mfe",
+                    "rnahybrid_strength",
+                    "rnaplfold_best_seed_unpaired_prob",
+                    "rnaplfold_n_sites_scored",
+                    "targetscan_context_score",
+                    "targetscan_context_score_support_percentile",
+                    "clip_max_score",
+                    "clip_n_experiments",
+                    "tcga_mean_spearman_rho",
                 ]
                 ordered_columns = [col for col in preferred_columns if col in df.columns]
                 ordered_columns.extend([col for col in df.columns if col not in ordered_columns])

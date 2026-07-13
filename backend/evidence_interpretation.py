@@ -97,6 +97,25 @@ def _as_float(value: Any, default: float = np.nan) -> float:
         return default
 
 
+def _as_bool(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (bool, np.bool_)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "f", "no", "n", "off", ""}:
+            return False
+    try:
+        if pd.isna(value):
+            return False
+    except TypeError:
+        pass
+    return bool(value)
+
+
 def _as_list(value: Any) -> List[str]:
     if value is None:
         return []
@@ -345,12 +364,23 @@ def _accessibility_key_evidence(row: pd.Series) -> List[str]:
             + _format_support_suffix(row, ["rnaplfold_best_seed_unpaired_prob_percentile"]),
         )
 
-    mean_site_prob = _as_float(row.get("rnaplfold_mean_site_unpaired_prob"))
-    if np.isfinite(mean_site_prob):
+    mean_seed_prob = _first_present_numeric(row, ["rnaplfold_mean_seed_unpaired_prob", "rnaplfold_mean_site_unpaired_prob"])
+    if np.isfinite(mean_seed_prob):
         _append_line(
             lines,
-            f"mean site unpaired probability {mean_site_prob:.3g}"
-            + _format_support_suffix(row, ["rnaplfold_mean_site_unpaired_prob_percentile"]),
+            f"mean seed-region unpaired probability {mean_seed_prob:.3g}"
+            + _format_support_suffix(
+                row,
+                ["rnaplfold_mean_seed_unpaired_prob_percentile", "rnaplfold_mean_site_unpaired_prob_percentile"],
+            ),
+        )
+
+    sites_scored = _as_float(row.get("rnaplfold_n_sites_scored"))
+    if np.isfinite(sites_scored) and sites_scored > 0:
+        _append_line(
+            lines,
+            f"RNAplfold sites scored {sites_scored:g}"
+            + _format_support_suffix(row, ["rnaplfold_n_sites_scored_percentile"]),
         )
 
     accessible_sites = _as_float(row.get("rnaplfold_n_accessible_sites"))
@@ -413,6 +443,16 @@ def _repression_key_evidence(row: pd.Series, tcga: Optional[str]) -> List[str]:
             )
         if _as_int(row.get(f"{tcga}_support_tcga"), 0) == 1 or _as_int(row.get(f"{tcga}_repression_evidence"), 0) == 1:
             _append_line(lines, f"{tcga} repression support present")
+    else:
+        for context in ["BRCA", "COAD", "PRAD"]:
+            rho = _as_float(row.get(f"{context}_spearman_rho"))
+            support = _as_bool(row.get(f"{context}_support_tcga")) or _as_bool(row.get(f"{context}_repression_evidence"))
+            anticorrelated = _as_bool(row.get(f"{context}_anticorrelated"))
+            if support or anticorrelated or (np.isfinite(rho) and rho < 0):
+                if np.isfinite(rho):
+                    _append_line(lines, f"{context} TCGA rho {rho:.3g}")
+                else:
+                    _append_line(lines, f"{context} TCGA repression support present")
 
     supported_contexts = _as_float(row.get("tcga_n_supported_contexts"))
     if np.isfinite(supported_contexts) and supported_contexts > 0:
@@ -451,7 +491,7 @@ def _family_key_evidence(row: pd.Series, family: str, tcga: Optional[str]) -> Li
 def _family_available(row: pd.Series, family: str, key_evidence: List[str]) -> bool:
     explicit = row.get(f"{family}_available")
     if explicit is not None and not pd.isna(explicit):
-        return bool(explicit)
+        return _as_bool(explicit)
 
     if family == "sequence_complementarity":
         return bool(
@@ -641,6 +681,27 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
         "score_column_used",
         "overall_evidence_support_percentile",
         "evidence_family_count",
+        "evidence_family_summary_json",
+        "sequence_complementarity_available",
+        "sequence_complementarity_support_percentile",
+        "sequence_complementarity_evidence_count",
+        "thermodynamic_stability_available",
+        "thermodynamic_stability_support_percentile",
+        "thermodynamic_stability_evidence_count",
+        "sequence_conservation_available",
+        "sequence_conservation_support_percentile",
+        "sequence_conservation_evidence_count",
+        "target_site_accessibility_available",
+        "target_site_accessibility_support_percentile",
+        "target_site_accessibility_evidence_count",
+        "functional_binding_available",
+        "functional_binding_support_percentile",
+        "functional_binding_evidence_count",
+        "functional_repression_available",
+        "functional_repression_support_percentile",
+        "functional_repression_evidence_count",
+        "seed_match_type",
+        "best_seed_site_type",
         "seed_pairing_score",
         "n_seed_sites",
         "rnahybrid_mfe",
@@ -650,20 +711,33 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
         "targetscan_context_score",
         "targetscan_context_score_percentile",
         "targetscan_context_score_support_percentile",
+        "targetscan_pct",
+        "targetscan_conserved_site",
         "targetscan_aggregate_context_score",
+        "clip_any_support",
         "clip_max_score",
         "clip_n_experiments",
         "clip_n_cell_lines",
         "encori_clip_score",
         "rnaplfold_best_seed_unpaired_prob",
+        "rnaplfold_mean_seed_unpaired_prob",
         "rnaplfold_mean_site_unpaired_prob",
+        "rnaplfold_n_sites_scored",
         "rnaplfold_n_accessible_sites",
         "tcga_n_supported_contexts",
         "tcga_mean_spearman_rho",
         "pathway_selected_gene",
     ]
-    if tcga:
-        raw_keys.extend([f"{tcga}_spearman_rho", f"{tcga}_support_tcga", f"{tcga}_repression_evidence"])
+    tcga_contexts = [tcga] if tcga else ["BRCA", "COAD", "PRAD"]
+    for context in [str(item).upper() for item in tcga_contexts if item]:
+        raw_keys.extend(
+            [
+                f"{context}_spearman_rho",
+                f"{context}_repression_evidence",
+                f"{context}_anticorrelated",
+                f"{context}_support_tcga",
+            ]
+        )
     for key in raw_keys:
         value = _raw_value_if_present(row, key)
         if value is not None:

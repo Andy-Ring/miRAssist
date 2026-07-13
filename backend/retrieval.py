@@ -345,10 +345,10 @@ def _sql_in_clause(column_sql: str, param_prefix: str, values: List[str], params
     for idx, value in enumerate(values):
         param_name = f"{param_prefix}_{idx}"
         placeholders.append(f":{param_name}")
-        params[param_name] = value
+        params[param_name] = str(value).strip().lower()
     if not placeholders:
         return "1 = 0"
-    return f"{column_sql} IN ({', '.join(placeholders)})"
+    return f"LOWER({column_sql}) IN ({', '.join(placeholders)})"
 
 
 def _postgres_rank_tiebreak_columns(available: set[str]) -> List[str]:
@@ -423,8 +423,8 @@ def build_postgres_candidate_query(
         if mirna_prefix_patterns:
             for idx, pattern in enumerate(mirna_prefix_patterns):
                 param_name = f"mirna_prefix_{idx}"
-                params[param_name] = pattern
-                mirna_bits.append(f"{quote_identifier(str(mirna_norm_col))} LIKE :{param_name}")
+                params[param_name] = str(pattern).strip().lower()
+                mirna_bits.append(f"LOWER({quote_identifier(str(mirna_norm_col))}) LIKE :{param_name}")
         where_clauses.append("(" + " OR ".join(mirna_bits) + ")" if mirna_bits else "1 = 0")
     else:
         params["gene_norm"] = _normalize_gene_symbol(query_token)
@@ -440,7 +440,7 @@ def build_postgres_candidate_query(
     learned_score_column = get_learned_score_column()
     selected_db_score_column = _resolve_score_column_from_available(available, learned_score_column)
     order_columns: List[str] = []
-    if get_use_learned_score() and selected_db_score_column and selected_db_score_column != "retrieval_score":
+    if selected_db_score_column and selected_db_score_column != "retrieval_score":
         order_columns.append(f"{quote_identifier(selected_db_score_column)} DESC NULLS LAST")
         order_columns.extend(_postgres_rank_tiebreak_columns(available))
         if "retrieval_score" in available:
@@ -465,8 +465,10 @@ def build_postgres_candidate_query(
     )
     diagnostics = {
         "evidence_backend": "postgres",
+        "supabase_table_name": get_evidence_table(),
         "db_candidate_limit": int(get_db_candidate_limit()),
         "learned_score_column": selected_db_score_column or learned_score_column,
+        "sort_column_used": selected_db_score_column or "retrieval_score",
         "query_direction": direction,
         "sql_mirna_norm_column": mirna_norm_col,
         "sql_gene_norm_column": gene_norm_col,
@@ -566,6 +568,7 @@ def _fetch_postgres_candidate_pool(
 
     diagnostics["n_rows_fetched_from_db"] = int(len(df))
     diagnostics["sql_selected_column_count"] = int(len(selected_columns))
+    diagnostics["sql_returned_column_count"] = int(len(df.columns))
     return df, diagnostics
 
 
@@ -1383,6 +1386,11 @@ def _collapse_pair_rows(df: pd.DataFrame) -> pd.DataFrame:
 
     agg: Dict[str, Any] = {}
 
+    # Normalized identifiers are needed for app/debug consistency after collapse.
+    for c in ["mirna_name_norm", "gene_symbol_norm", "mirna_name_normalized", "gene_symbol_normalized"]:
+        if c in df.columns:
+            agg[c] = _first_nonnull_value
+
     # Common evidence fields
     for c in ["support_encori", "support_targetscan", "support_mirdb", "mirtarbase_pos", "label_mirtarbase"]:
         if c in df.columns:
@@ -1390,32 +1398,73 @@ def _collapse_pair_rows(df: pd.DataFrame) -> pd.DataFrame:
     if "support_count" in df.columns:
         agg["support_count"] = "max"
 
+    for c in ["evidence_family_count", "overall_evidence_support_percentile"]:
+        if c in df.columns:
+            agg[c] = "max"
+    if "evidence_family_summary_json" in df.columns:
+        agg["evidence_family_summary_json"] = _first_nonnull_value
+
+    for family in [
+        "sequence_complementarity",
+        "thermodynamic_stability",
+        "sequence_conservation",
+        "target_site_accessibility",
+        "functional_binding",
+        "functional_repression",
+    ]:
+        available_col = f"{family}_available"
+        percentile_col = f"{family}_support_percentile"
+        count_col = f"{family}_evidence_count"
+        if available_col in df.columns:
+            agg[available_col] = "max"
+        if percentile_col in df.columns:
+            agg[percentile_col] = "max"
+        if count_col in df.columns:
+            agg[count_col] = "max"
+
     # Support tcga (new evidence line)
     for col in df.columns:
         if col.endswith("_support_tcga") or col == "support_tcga_any":
             agg[col] = "max"
 
     # TargetScan
-    if "ts_best_contextpp" in df.columns:
-        agg["ts_best_contextpp"] = "min"
-    if "ts_best_percentile" in df.columns:
-        agg["ts_best_percentile"] = "max"
-    if "ts_n_sites" in df.columns:
-        agg["ts_n_sites"] = "max"
+    for c in ["ts_best_contextpp", "targetscan_context_score", "targetscan_aggregate_context_score"]:
+        if c in df.columns:
+            agg[c] = "min"
+    for c in [
+        "ts_best_percentile",
+        "targetscan_context_score_support_percentile",
+        "targetscan_context_score_percentile",
+        "targetscan_aggregate_context_score_percentile",
+        "targetscan_pct",
+        "targetscan_pct_percentile",
+        "targetscan_branch_length_score",
+        "targetscan_branch_length_score_percentile",
+    ]:
+        if c in df.columns:
+            agg[c] = "max"
+    for c in ["ts_n_sites", "targetscan_conserved_site", "has_targetscan_evidence"]:
+        if c in df.columns:
+            agg[c] = "max"
     if "ts_best_site" in df.columns:
         agg["ts_best_site"] = "min"
 
     # Seed/site and structure-aware raw fields
     for c in [
         "has_seed_features",
+        "has_seed_evidence",
         "has_rnahybrid",
+        "has_rnahybrid_evidence",
     ]:
         if c in df.columns:
             agg[c] = "max"
-    if "best_seed_class" in df.columns:
-        agg["best_seed_class"] = _best_seed_class_value
+    for c in ["best_seed_class", "seed_match_type", "best_seed_site_type"]:
+        if c in df.columns:
+            agg[c] = _best_seed_class_value
     for c in [
         "n_total_sites",
+        "n_seed_sites",
+        "n_seed_sites_percentile",
         "n_sites_6mer",
         "n_sites_7mer_a1",
         "n_sites_7mer_m8",
@@ -1428,15 +1477,69 @@ def _collapse_pair_rows(df: pd.DataFrame) -> pd.DataFrame:
         "n_sites_mfe_lt_-25",
         "best_local_au",
         "best_local_au_by_mfe",
+        "seed_pairing_score",
+        "seed_pairing_score_percentile",
+        "rnahybrid_strength",
+        "rnahybrid_strength_percentile",
     ]:
         if c in df.columns:
             agg[c] = "max"
-    for c in ["best_mfe", "mean_top3_mfe"]:
+    for c in [
+        "best_mfe",
+        "mean_top3_mfe",
+        "rnahybrid_mfe",
+        "rnahybrid_mfe_best_site",
+        "rnahybrid_seed_mfe",
+    ]:
         if c in df.columns:
             agg[c] = "min"
+    for c in [
+        "rnahybrid_mfe_percentile",
+        "rnahybrid_mfe_best_site_percentile",
+        "rnahybrid_seed_mfe_percentile",
+    ]:
+        if c in df.columns:
+            agg[c] = "max"
 
     # ENCORI
-    for c in ["clip_exp_sum", "clip_exp_max", "n_clip_sites"]:
+    for c in [
+        "clip_exp_sum",
+        "clip_exp_max",
+        "n_clip_sites",
+        "clip_any_support",
+        "clip_max_score",
+        "clip_max_score_percentile",
+        "clip_n_experiments",
+        "clip_n_experiments_percentile",
+        "clip_n_cell_lines",
+        "clip_n_cell_lines_percentile",
+        "encori_clip_score",
+        "encori_clip_score_percentile",
+        "has_clip_evidence",
+    ]:
+        if c in df.columns:
+            agg[c] = "max"
+
+    # RNAplfold/accessibility
+    for c in [
+        "rnaplfold_best_seed_unpaired_prob",
+        "rnaplfold_best_seed_unpaired_prob_percentile",
+        "rnaplfold_mean_seed_unpaired_prob",
+        "rnaplfold_mean_seed_unpaired_prob_percentile",
+        "rnaplfold_best_site_unpaired_prob",
+        "rnaplfold_best_site_unpaired_prob_percentile",
+        "rnaplfold_mean_site_unpaired_prob",
+        "rnaplfold_mean_site_unpaired_prob_percentile",
+        "rnaplfold_best_flank_unpaired_prob",
+        "rnaplfold_best_flank_unpaired_prob_percentile",
+        "rnaplfold_mean_flank_unpaired_prob",
+        "rnaplfold_mean_flank_unpaired_prob_percentile",
+        "rnaplfold_n_sites_scored",
+        "rnaplfold_n_sites_scored_percentile",
+        "rnaplfold_n_accessible_sites",
+        "rnaplfold_n_accessible_sites_percentile",
+        "has_rnaplfold_evidence",
+    ]:
         if c in df.columns:
             agg[c] = "max"
 
@@ -1753,7 +1856,7 @@ def retrieve_candidates(
     df, ranking_info = apply_learned_score_ranking(
         df,
         learned_score_column=get_learned_score_column(),
-        enabled=bool(get_use_learned_score()),
+        enabled=bool(get_use_learned_score() or _resolve_score_column(df, get_learned_score_column())),
     )
     diagnostics.update({k: v for k, v in ranking_info.items() if k != "warnings"})
     for warning in ranking_info.get("warnings", []):
@@ -1874,9 +1977,18 @@ def retrieve_from_queryspec(
             "db_candidate_limit": fetch_diagnostics.get("db_candidate_limit"),
             "n_rows_fetched_from_db": fetch_diagnostics.get("n_rows_fetched_from_db"),
             "sql_selected_column_count": fetch_diagnostics.get("sql_selected_column_count"),
+            "sql_returned_column_count": fetch_diagnostics.get("sql_returned_column_count"),
+            "supabase_table_name": fetch_diagnostics.get("supabase_table_name") or get_evidence_table(),
+            "sort_column_used": diagnostics.get("score_column_used")
+            or fetch_diagnostics.get("sort_column_used")
+            or fetch_diagnostics.get("learned_score_column"),
             "learned_score_column": fetch_diagnostics.get("learned_score_column", diagnostics.get("learned_score_column")),
         }
     )
+    if fetch_diagnostics.get("sql_mirna_norm_column"):
+        diagnostics["sql_mirna_norm_column"] = fetch_diagnostics["sql_mirna_norm_column"]
+    if fetch_diagnostics.get("query_direction"):
+        diagnostics["query_direction"] = fetch_diagnostics["query_direction"]
     if fetch_diagnostics.get("sql_order_columns"):
         diagnostics["sql_order_columns"] = fetch_diagnostics["sql_order_columns"]
     return shortlist_df, direction, diagnostics

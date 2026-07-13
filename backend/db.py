@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from typing import Any, Optional, Tuple
 
+from sqlalchemy import create_engine
+
 from backend.config import get_database_url
 
 
@@ -33,8 +35,6 @@ def _build_engine_kwargs(resolved_url: str) -> dict:
 
 
 def get_database_engine(database_url: Optional[str] = None) -> Optional[Any]:
-    from sqlalchemy import create_engine
-
     resolved_url = normalize_database_url(database_url or get_database_url() or "")
     if not resolved_url:
         return None

@@ -87,7 +87,10 @@ def get_evidence_backend() -> str:
 
 
 def get_evidence_table() -> str:
-    return (os.getenv("EVIDENCE_TABLE", "mirassist_evidence_pairs") or "mirassist_evidence_pairs").strip()
+    table_name = (os.getenv("EVIDENCE_TABLE", "public.mirassist_evidence_pairs") or "public.mirassist_evidence_pairs").strip()
+    if "." not in table_name:
+        table_name = f"public.{table_name}"
+    return table_name
 
 
 def resolve_evidence_path(explicit: str | None = None) -> Path:

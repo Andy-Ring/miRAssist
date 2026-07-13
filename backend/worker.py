@@ -278,6 +278,10 @@ def run_query_job(
             },
             retrieval_diagnostics=retrieval_diagnostics,
         )
+        prompt_bundle_debug = {
+            "candidate_order_sent_to_llm": (bundle.get("meta") or {}).get("candidate_order_sent_to_llm", []),
+            "cards_count": (bundle.get("meta") or {}).get("cards_count", len(cards)),
+        }
 
         persist(
             {
@@ -301,6 +305,7 @@ def run_query_job(
             "pathway_selection": pathway_selection,
             "retrieval_diagnostics": retrieval_diagnostics,
             "card_generation_diagnostics": card_generation_diagnostics,
+            "prompt_bundle_debug": prompt_bundle_debug,
             "shortlist": shortlist_records,
             "answer": answer_obj,
             "disable_synthesis": synthesis_disabled,
