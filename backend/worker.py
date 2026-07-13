@@ -97,7 +97,8 @@ def run_query_job(
     require_binding_evidence: bool = False,
     require_expression: bool = False,
     pathway_mode: str = "auto",
-    disable_synthesis: bool = False,
+    disable_synthesis: bool | None = None,
+    persist_job: bool = True,
 ) -> Dict[str, Any]:
     from backend.feature_stats import annotate_feature_percentiles
     from backend.jobstore import write_job
@@ -105,9 +106,13 @@ def run_query_job(
     from backend.planner import run_planner
     from backend.retrieval import load_evidence, retrieve_from_queryspec
 
+    def persist(payload: Dict[str, Any]) -> None:
+        if persist_job:
+            write_job(query_id, payload)
+
     try:
-        write_job(query_id, {"status": "running", "stage": "planner"})
-        synthesis_disabled = bool(disable_synthesis or get_disable_synthesis())
+        persist({"status": "running", "stage": "planner"})
+        synthesis_disabled = get_disable_synthesis() if disable_synthesis is None else bool(disable_synthesis)
 
         qs = run_planner(question)
         qs = _apply_query_overrides(
@@ -128,14 +133,13 @@ def run_query_job(
         pathway_selection = compact_pathway_selection(pathway_selection_internal)
         qs["pathway_selection"] = pathway_selection
 
-        write_job(
-            query_id,
+        persist(
             {
                 "status": "running",
                 "stage": "retrieval",
                 "queryspec": qs,
                 "pathway_selection": pathway_selection,
-            },
+            }
         )
 
         evidence_backend = get_evidence_backend()
@@ -216,7 +220,7 @@ def run_query_job(
                 "disable_synthesis": True,
                 "result_mode": "chart_only",
             }
-            write_job(query_id, final_payload)
+            persist(final_payload)
             return final_payload
 
         if answer_obj is not None:
@@ -232,7 +236,7 @@ def run_query_job(
                 "disable_synthesis": synthesis_disabled,
                 "result_mode": "answer_only",
             }
-            write_job(query_id, final_payload)
+            persist(final_payload)
             return final_payload
 
         from backend.cards import cards_from_dataframe_with_diagnostics
@@ -275,8 +279,7 @@ def run_query_job(
             retrieval_diagnostics=retrieval_diagnostics,
         )
 
-        write_job(
-            query_id,
+        persist(
             {
                 "status": "running",
                 "stage": "synthesis",
@@ -285,7 +288,7 @@ def run_query_job(
                 "retrieval_diagnostics": retrieval_diagnostics,
                 "card_generation_diagnostics": card_generation_diagnostics,
                 "shortlist": shortlist_records,
-            },
+            }
         )
 
         if answer_obj is None:
@@ -303,7 +306,7 @@ def run_query_job(
             "disable_synthesis": synthesis_disabled,
             "result_mode": "answer_and_chart",
         }
-        write_job(query_id, final_payload)
+        persist(final_payload)
         return final_payload
     except Exception as exc:
         error_payload = {
@@ -312,7 +315,7 @@ def run_query_job(
             "error": str(exc),
             "traceback": traceback.format_exc(),
         }
-        write_job(query_id, error_payload)
+        persist(error_payload)
         return error_payload
 
 
@@ -325,7 +328,7 @@ def main() -> None:
     ap.add_argument("--novel", action="store_true")
     ap.add_argument("--require_binding_evidence", action="store_true")
     ap.add_argument("--require_expression", action="store_true")
-    ap.add_argument("--disable_synthesis", action="store_true")
+    ap.add_argument("--disable_synthesis", action="store_true", default=None)
     ap.add_argument(
         "--pathway_mode",
         default="auto",

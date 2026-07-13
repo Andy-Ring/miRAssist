@@ -428,39 +428,26 @@ def render_shortlist_chart(shortlist: list[dict]) -> None:
         st.info("No chartable ranked candidates were returned.")
         return
 
-    try:
-        import altair as alt
-
-        tooltip = [
-            alt.Tooltip("candidate_label:N", title="Candidate"),
-            alt.Tooltip(f"{score_column}:Q", title=score_column, format=".4f"),
-        ]
-        if "support_count" in chart_df.columns:
-            tooltip.append(alt.Tooltip("support_count:Q", title="Support count", format=".0f"))
-        if "score_column_used" in chart_df.columns:
-            tooltip.append(alt.Tooltip("score_column_used:N", title="Score column used"))
-
-        chart = (
-            alt.Chart(chart_df)
-            .mark_bar(cornerRadiusTopRight=4, cornerRadiusBottomRight=4)
-            .encode(
-                x=alt.X(f"{score_column}:Q", title=score_column),
-                y=alt.Y("candidate_label:N", sort="-x", title=None),
-                tooltip=tooltip,
-            )
-            .properties(height=max(280, 32 * len(chart_df)))
-        )
-        st.altair_chart(chart, use_container_width=True)
-    except Exception:
-        # Posit/hosted environments may provide Streamlit without a direct Altair import.
-        fallback_df = chart_df.loc[:, ["candidate_label", score_column]].set_index("candidate_label")
-        st.bar_chart(fallback_df, use_container_width=True)
+    scores = pd.to_numeric(chart_df[score_column], errors="coerce")
+    score_min = float(scores.min())
+    score_max = float(scores.max())
+    score_span = max(score_max - score_min, 1e-12)
+    for _, row in chart_df.iterrows():
+        raw_score = float(row[score_column])
+        normalized = (raw_score - score_min) / score_span if score_max != score_min else raw_score
+        normalized = max(0.0, min(1.0, normalized))
+        label = str(row["candidate_label"])
+        support = row.get("support_count")
+        support_text = ""
+        if pd.notna(support):
+            support_text = f" | support {int(float(support))}"
+        st.write(f"**{label}** | {score_column}: `{raw_score:.4f}`{support_text}")
+        st.progress(normalized)
 
     st.caption(f"Showing the top {len(chart_df)} retrieved candidates ranked by `{score_column}`.")
 
 
 def run_direct_mode(submit_payload: dict) -> None:
-    from backend.jobstore import read_job
     from backend.worker import run_query_job
 
     query_id = uuid.uuid4().hex[:16]
@@ -483,11 +470,10 @@ def run_direct_mode(submit_payload: dict) -> None:
             require_binding_evidence=submit_payload["require_binding_evidence"],
             require_expression=submit_payload["require_expression"],
             pathway_mode="auto",
+            persist_job=False,
         )
 
-    final_result = read_job(query_id)
-    if not final_result or final_result.get("status") == "unknown":
-        final_result = result
+    final_result = result
 
     st.session_state["last_status"] = {
         "status": final_result.get("status", "unknown"),
@@ -532,6 +518,17 @@ st.caption(
 
 c1 = st.columns(1)[0]
 with c1:
+    response_mode = st.radio(
+        "Response mode",
+        options=["Database chart only", "Answer synthesis"],
+        index=0,
+        horizontal=True,
+        help=(
+            "Choose database chart only for fast ranked candidates, or answer synthesis "
+            "to ask the configured LLM backend to write a summary from the evidence cards."
+        ),
+    )
+
     novel = st.checkbox(
         "Novel mode",
         value=False,
@@ -554,7 +551,7 @@ if run:
             "novel": bool(novel),
             "k": DEFAULT_UI_CANDIDATE_POOL,
             "min_support": DEFAULT_UI_MIN_SUPPORT,
-            "disable_synthesis": True,
+            "disable_synthesis": response_mode == "Database chart only",
             "require_binding_evidence": False,
             "require_expression": False,
             "pathway_mode": "auto",
@@ -589,6 +586,7 @@ if result:
 
         if synthesis_disabled:
             st.markdown("## Retrieved candidates")
+            st.caption("Answer synthesis is disabled; miRAssist is returning database-ranked candidates only.")
             render_shortlist_chart(shortlist)
             summary_md = pick_summary_markdown(result)
             if summary_md and not shortlist:
@@ -657,6 +655,6 @@ if result:
                 df = df.loc[:, ordered_columns]
                 if len(shortlist) > max_rows:
                     st.caption(f"Showing the first {max_rows} debug rows.")
-                st.dataframe(df, use_container_width=True)
+                st.json(df.to_dict(orient="records"))
             else:
                 st.info("Shortlist is empty.")
