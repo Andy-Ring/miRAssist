@@ -1,12 +1,16 @@
+from pathlib import Path
+import runpy
 import traceback
 
 import streamlit as st
 
 print("[miRAssist] root app.py import started", flush=True)
 
+FRONTEND_APP = Path(__file__).resolve().parent / "frontend" / "app.py"
+
 try:
-    import frontend.app  # noqa: F401
-    print("[miRAssist] frontend.app import completed", flush=True)
+    runpy.run_path(str(FRONTEND_APP), run_name="__main__")
+    print("[miRAssist] frontend app script executed", flush=True)
 except Exception as e:
     print(f"[miRAssist] startup error: {e}", flush=True)
     print(traceback.format_exc(), flush=True)
