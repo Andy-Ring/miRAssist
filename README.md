@@ -6,8 +6,12 @@
 
 miRAssist ranks candidate microRNA–mRNA (miRNA–target) interactions with a learned
 XGBoost model on top of a curated, multi-source evidence database, and explains each
-result in plain language. Use it as a hosted **Streamlit web app** or install it as a
-**Claude skill** and query it in natural language from inside Claude.
+result in plain language.
+
+**▶ Try it now (no install):** hosted web app on Posit Connect Cloud →
+**https://andy-ring-mirassist.share.connect.posit.cloud/**
+
+Or install it as a **Claude skill** and ask in natural language from inside Claude.
 
 </div>
 
@@ -18,7 +22,6 @@ result in plain language. Use it as a hosted **Streamlit web app** or install it
 - [What it is](#what-it-is)
 - [How it works](#how-it-works)
 - [Evidence sources](#evidence-sources)
-- [The Supabase database](#the-supabase-database)
 - [Option A — Streamlit web app](#option-a--streamlit-web-app)
 - [Option B — Claude skill](#option-b--claude-skill)
 - [Configuration reference](#configuration-reference)
@@ -47,21 +50,25 @@ language layer is instructed never to invent numbers or gene–phenotype relatio
 
 ```
 Question ─► Planner ─► Retrieval ─► XGBoost ranking ─► Synthesizer ─► Grounded answer
-            (LLM)      (Supabase)    (learned score)     (LLM)
+                       (evidence DB)  (learned score)
 ```
 
 1. **Planner** converts a natural-language question into a structured `QuerySpec`
    (entity, direction, cancer, phenotype/pathway intent, filters).
-2. **Retrieval** pulls a bounded candidate pool from the evidence table, normalizes miRNA
-   names and mature arms, and applies grounded pathway filtering.
+2. **Retrieval** pulls a bounded candidate pool for the queried miRNA/gene, normalizes
+   miRNA names and mature arms, and applies grounded pathway filtering.
 3. **Ranking** orders candidates by the precomputed learned XGBoost score
    (`learned_score_xgb_raw_v1`), falling back to the manual `retrieval_score` per row when
    the learned score is missing.
 4. **Synthesizer** writes the explanation using only backend-computed values and labels.
 
-In the **Streamlit app**, the planner and synthesizer run on OpenAI-hosted models. In the
-**Claude skill**, Claude itself performs the planner and synthesizer roles, so no OpenAI
-key is required — only read access to the database.
+The two deployments differ only in *who plays the planner/synthesizer* and *where the
+evidence lives*:
+
+| | Planner & synthesizer | Evidence source |
+|---|---|---|
+| **Streamlit app** | OpenAI-hosted models | Supabase (Postgres), live |
+| **Claude skill** | Claude itself (no OpenAI key) | GitHub-hosted parquet snapshot, cached locally |
 
 ## Evidence sources
 
@@ -83,58 +90,28 @@ Feature percentiles are computed against the full database and reported with fix
 
 ---
 
-## The Supabase database
-
-Both the app and the skill read candidate evidence from a hosted **Supabase (Postgres)**
-database. The connection string (Supabase transaction pooler) is:
-
-```
-postgresql://postgres.vkbkeernvifbefwmkaae:[YOUR-PASSWORD]@aws-1-us-west-2.pooler.supabase.com:6543/postgres
-```
-
-- **Evidence table:** `mirassist_evidence_pairs`
-- **Password:** replace `[YOUR-PASSWORD]` with the database password. In the Supabase
-  dashboard, go to **Project Settings → Database → Connection string** (or reset the
-  password under **Database → Reset database password**). Use a **read-only** role for
-  distribution wherever possible.
-
-Set it as an environment variable:
-
-```bash
-export DATABASE_URL="postgresql://postgres.vkbkeernvifbefwmkaae:YOUR_ACTUAL_PASSWORD@aws-1-us-west-2.pooler.supabase.com:6543/postgres"
-export EVIDENCE_BACKEND=postgres
-export EVIDENCE_TABLE=mirassist_evidence_pairs
-```
-
-> **Security note:** never commit a real password. Keep it in `.env` (already
-> git-ignored) or your host's secret manager. Share only the pooler path above with the
-> `[YOUR-PASSWORD]` placeholder intact.
-
----
-
 ## Option A — Streamlit web app
 
-The Streamlit app provides the full interactive UI: ranked-candidate chart, planner output
-(`QuerySpec`), and the evidence shortlist.
+The interactive UI shows the ranked-candidate chart, the planner output (`QuerySpec`), and
+the evidence shortlist.
 
-### 1. Install
+### Use the hosted app (no setup)
+
+The app is live on Posit Connect Cloud — just open it and start asking questions:
+
+**https://andy-ring-mirassist.share.connect.posit.cloud/**
+
+### Run it yourself
 
 ```bash
-git clone https://github.com/<your-org>/miRAssist.git
+git clone https://github.com/Andy-Ring/miRAssist.git
 cd miRAssist
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-### 2. Configure
-
-Copy the template and fill in your secrets:
-
-```bash
 cp .env.example .env
 ```
 
-Then edit `.env` so it contains, at minimum:
+Edit `.env` with your OpenAI key and the Supabase evidence database:
 
 ```bash
 MIRASSIST_LLM_BACKEND=openai
@@ -144,71 +121,55 @@ MIRASSIST_SYNTH_MODEL=gpt-5.4-mini
 
 EVIDENCE_BACKEND=postgres
 EVIDENCE_TABLE=mirassist_evidence_pairs
-DATABASE_URL=postgresql://postgres.vkbkeernvifbefwmkaae:YOUR_ACTUAL_PASSWORD@aws-1-us-west-2.pooler.supabase.com:6543/postgres
-
-JOBSTORE_BACKEND=postgres                 # or filesystem for local dev
+DATABASE_URL=postgresql://postgres.vkbkeernvifbefwmkaae:YOUR_PASSWORD@aws-1-us-west-2.pooler.supabase.com:6543/postgres
 MIRASSIST_USE_LEARNED_SCORE=1
-MIRASSIST_LEARNED_SCORE_COLUMN=learned_score_xgb_raw_v1
 ```
 
-### 3. Run
+Get the database password from the Supabase dashboard (**Project Settings → Database**).
+Never commit a real password — keep it in `.env` (already git-ignored) or your host's
+secret manager. Then run:
 
 ```bash
 streamlit run app.py
 ```
 
-Then open the local URL Streamlit prints and enter a question such as
-*"What does miR-21 target in breast cancer?"*
-
-### Deploying (Posit Connect Cloud)
-
-The app runs cleanly on Posit Connect Cloud with `app.py` as the entry point. Set the
+**Deploying on Posit Connect Cloud:** use `app.py` as the entry point and set the
 environment variables above through Posit's environment/secrets UI rather than committing
 `.env`. The bundled `uvicorn` shim pins Streamlit to its legacy websocket backend to avoid
-`403` upgrade failures on Posit's newer builds. `pandas`, `sqlalchemy`, and `psycopg` are
-included; heavy local-inference dependencies (e.g. `torch`) are intentionally excluded.
+`403` upgrade failures on Posit's newer builds; heavy local-inference dependencies (e.g.
+`torch`) are intentionally excluded.
 
 ---
 
 ## Option B — Claude skill
 
 The Claude skill wraps the same deterministic retrieval + XGBoost ranking core, but Claude
-plays the planner and synthesizer roles — so **no OpenAI key is needed**. On first use it
-downloads a one-time evidence snapshot from this repo's GitHub Releases and caches it
-locally, so **end users configure nothing** and it works in sandboxed environments where
-the live database host isn't reachable. Skill assets live in
-[`mirassist-skill/`](mirassist-skill/), and a pre-packaged installer is provided as
-`mirassist.skill`.
+plays the planner and synthesizer roles — so **no OpenAI key and no database password are
+needed**. On first use it downloads a one-time evidence snapshot from this repo's GitHub
+Releases and caches it locally, so **end users configure nothing**. Skill assets live in
+[`mirassist-skill/`](mirassist-skill/), with a pre-packaged installer at `mirassist.skill`.
 
 ### 1. Install the skill
 
-Download **`mirassist.skill`** from this repository (or the Releases page), open it in
-Claude (desktop app or web), and click **Save skill**.
-
-Alternatively, clone the repo and zip the folder yourself:
-
-```bash
-cd mirassist-skill && zip -r ../mirassist.skill . -x '*.pyc' -x '*__pycache__*'
-```
+Download **[`mirassist.skill`](mirassist.skill)** from this repository, open it in Claude
+(desktop app or web), and click **Save skill**.
 
 ### 2. Install dependencies
-
-The only end-user step is the light runtime (no OpenAI, no torch, no database password):
 
 ```bash
 pip install -r mirassist-skill/requirements.txt   # pandas, numpy, pyarrow, requests
 ```
 
-The evidence snapshot downloads automatically on first query — see
-[Publishing your own copy](#publishing-your-own-copy) below if you are forking the project.
-
 ### 3. Use it
 
 Ask Claude a miRNA-target question in natural language, e.g.
-*"Which genes does miR-21 target to promote apoptosis in breast cancer?"* Claude builds the
-query, runs the retrieval core, and returns a ranked, evidence-grounded answer.
+*"Which miRNAs regulate PTEN?"* or *"Which genes does miR-21 target to promote apoptosis in
+breast cancer?"* Claude builds the query, runs the retrieval core, and returns a ranked,
+evidence-grounded answer.
 
-Under the hood the skill calls a headless CLI you can also run directly:
+The first query downloads the evidence snapshot (~106 MB) from the GitHub Release and
+caches it; subsequent queries are fast. Under the hood the skill calls a headless CLI you
+can also run directly:
 
 ```bash
 python mirassist-skill/scripts/retrieve.py \
@@ -225,15 +186,17 @@ output-column reference.
 
 If you fork miRAssist, publish the evidence snapshot once so the skill can fetch it:
 
-1. **Export the Supabase evidence table to parquet**, keeping the learned-score
-   (`learned_score_xgb_raw_v1`) and precomputed `*_percentile` columns:
+1. **Export the evidence table to parquet** with the bundled helper (guarantees the
+   learned-score and percentile columns retrieval needs):
 
-   ```python
-   import pandas as pd, sqlalchemy as sa
-   e = sa.create_engine("postgresql+psycopg://USER:PASSWORD@HOST:5432/postgres")
-   pd.read_sql("select * from public.mirassist_evidence_pairs", e) \
-     .to_parquet("mirassist_evidence_pairs.parquet", index=False)
+   ```bash
+   python mirassist-skill/scripts/export_snapshot.py --from-supabase \
+     --database-url "postgresql://USER:PASSWORD@HOST:5432/postgres" \
+     --out mirassist_evidence_pairs.parquet
    ```
+
+   It prints `OK: all key retrieval columns are present` (or warns what's missing). To
+   convert an existing CSV instead, use `--from-csv path.csv`.
 
 2. **Attach the parquet to a public GitHub Release** of your fork.
 
@@ -241,7 +204,7 @@ If you fork miRAssist, publish the evidence snapshot once so the skill can fetch
    [`mirassist-skill/scripts/skill_settings.json`](mirassist-skill/scripts/skill_settings.json):
 
    ```json
-   { "evidence_parquet_url": "https://github.com/<you>/miRAssist/releases/download/v1.0-evidence/mirassist_evidence_pairs.parquet" }
+   { "evidence_parquet_url": "https://github.com/Andy-Ring/miRAssist/releases/download/v0.0.1/mirassist_evidence_pairs.parquet" }
    ```
 
 The snapshot is read-only public data — no keys required for end users. When the data
@@ -249,11 +212,11 @@ changes, upload a new release and update the URL; caches re-download automatical
 Retrieval reads only the rows for the queried miRNA/gene (parquet predicate pushdown), so
 the full table is never loaded into memory.
 
-**Optional live-database modes.** `EVIDENCE_BACKEND=parquet` + `MIRASSIST_EVIDENCE=/path.parquet`
-runs fully offline against a local file. `EVIDENCE_BACKEND=rest` queries Supabase live via
-its REST API with a publishable `anon` key (`supabase_url` + `supabase_anon_key` in
-skill_settings.json, plus a read-only RLS `SELECT` policy) — but only where your environment
-allowlists the Supabase host.
+> **Note on sandboxed environments.** GitHub *release-asset* downloads must be reachable
+> from wherever the skill runs. If a locked-down environment blocks them, the CLI returns a
+> clear "failed to download" error; alternatives are `EVIDENCE_BACKEND=parquet` +
+> `MIRASSIST_EVIDENCE=/local.parquet` (fully offline) or `EVIDENCE_BACKEND=rest` against
+> Supabase (needs the Supabase host allowlisted).
 
 ---
 
@@ -261,26 +224,16 @@ allowlists the Supabase host.
 
 | Variable | Purpose | Typical value |
 |---|---|---|
-| `EVIDENCE_BACKEND` | Evidence source | `github` (skill default) / `rest` / `postgres` (app) / `parquet` (dev) |
-| `MIRASSIST_EVIDENCE_URL` | GitHub Release snapshot URL (skill default mode) | `https://github.com/.../mirassist_evidence_pairs.parquet` |
+| `EVIDENCE_BACKEND` | Evidence source | `github` (skill default) / `postgres` (app) / `parquet` (offline) / `rest` |
+| `MIRASSIST_EVIDENCE_URL` | GitHub Release snapshot URL (skill default) | `https://github.com/Andy-Ring/miRAssist/releases/download/v0.0.1/mirassist_evidence_pairs.parquet` |
 | `MIRASSIST_EVIDENCE` | Local parquet path (offline mode) | `/path/to/evidence.parquet` |
-| `MIRASSIST_SUPABASE_URL` | Supabase project URL (skill REST mode) | `https://vkbkeernvifbefwmkaae.supabase.co` |
-| `MIRASSIST_SUPABASE_ANON_KEY` | Publishable anon key (skill REST mode) | `sb_publishable_...` |
-| `DATABASE_URL` | Supabase Postgres connection (app) | pooler string above |
 | `EVIDENCE_TABLE` | Evidence table name | `mirassist_evidence_pairs` |
 | `MIRASSIST_USE_LEARNED_SCORE` | Enable XGBoost ranking | `1` |
 | `MIRASSIST_LEARNED_SCORE_COLUMN` | Learned-score column | `learned_score_xgb_raw_v1` |
-| `MIRASSIST_DB_CANDIDATE_LIMIT` | Bounded candidate pool size | `1000` |
-| `MIRASSIST_DEFAULT_K` | Candidate pool passed to synthesis | `10` |
 | `MIRASSIST_DEFAULT_RESULT_COUNT` | Ranked results shown | `5` |
-| `JOBSTORE_BACKEND` | Job persistence (app only) | `postgres` / `filesystem` |
-| `MIRASSIST_LLM_BACKEND` | LLM backend (app only) | `openai` |
+| `DATABASE_URL` | Supabase Postgres connection (app) | `postgresql://…@…pooler.supabase.com:6543/postgres` |
 | `OPENAI_API_KEY` | OpenAI key (app only) | `sk-...` |
-| `MIRASSIST_PLANNER_MODEL` | Planner model (app only) | `gpt-5.4-nano` |
-| `MIRASSIST_SYNTH_MODEL` | Synthesizer model (app only) | `gpt-5.4-mini` |
-
-For local development without Supabase, set `EVIDENCE_BACKEND=parquet` and
-`MIRASSIST_EVIDENCE=/path/to/evidence_interactions.parquet`.
+| `MIRASSIST_PLANNER_MODEL` / `MIRASSIST_SYNTH_MODEL` | LLM models (app only) | `gpt-5.4-nano` / `gpt-5.4-mini` |
 
 ---
 
@@ -288,12 +241,13 @@ For local development without Supabase, set `EVIDENCE_BACKEND=parquet` and
 
 ```
 miRAssist/
-├── app.py                     # Streamlit entry point
+├── app.py                     # Streamlit entry point (hosted on Posit)
 ├── frontend/                  # Streamlit UI
-├── backend/                   # planner, retrieval, ranking, pathways, synthesizer
-├── data/processed/            # evidence + pathway data (parquet)
+├── backend/                   # planner, retrieval, XGBoost ranking, pathways, synthesizer
+├── data/processed/            # evidence + pathway data
 ├── evaluation/                # benchmarking & paper-figure pipeline
-├── mirassist-skill/           # Claude skill (SKILL.md, retrieval CLI, bundled core)
+├── mirassist-skill/           # Claude skill (SKILL.md, retrieval CLI, snapshot loader,
+│                              #   export_snapshot.py, bundled core)
 ├── mirassist.skill            # packaged, installable skill
 ├── requirements.txt           # Streamlit-app dependencies
 └── .env.example               # configuration template
