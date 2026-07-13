@@ -211,6 +211,7 @@ def run_query_job(
             final_payload = {
                 "status": "done",
                 "stage": "done",
+                "query_id": query_id,
                 "queryspec": qs,
                 "pathway_selection": pathway_selection,
                 "retrieval_diagnostics": retrieval_diagnostics,
@@ -227,6 +228,7 @@ def run_query_job(
             final_payload = {
                 "status": "done",
                 "stage": "done",
+                "query_id": query_id,
                 "queryspec": qs,
                 "pathway_selection": pathway_selection,
                 "retrieval_diagnostics": retrieval_diagnostics,
@@ -301,6 +303,7 @@ def run_query_job(
         final_payload = {
             "status": "done",
             "stage": "done",
+            "query_id": query_id,
             "queryspec": qs,
             "pathway_selection": pathway_selection,
             "retrieval_diagnostics": retrieval_diagnostics,

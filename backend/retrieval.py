@@ -427,8 +427,8 @@ def build_postgres_candidate_query(
                 mirna_bits.append(f"LOWER({quote_identifier(str(mirna_norm_col))}) LIKE :{param_name}")
         where_clauses.append("(" + " OR ".join(mirna_bits) + ")" if mirna_bits else "1 = 0")
     else:
-        params["gene_norm"] = _normalize_gene_symbol(query_token)
-        where_clauses.append(f"{quote_identifier(str(gene_norm_col))} = :gene_norm")
+        params["gene_norm"] = _normalize_gene_symbol(query_token).lower()
+        where_clauses.append(f"LOWER({quote_identifier(str(gene_norm_col))}) = :gene_norm")
 
     pathway_selection = cfg.pathway_selection or {}
     if bool(pathway_selection.get("enabled")) and cfg.pathway_gene_set and gene_norm_col is not None:
@@ -472,6 +472,7 @@ def build_postgres_candidate_query(
         "query_direction": direction,
         "sql_mirna_norm_column": mirna_norm_col,
         "sql_gene_norm_column": gene_norm_col,
+        "query_gene_normalized": _normalize_gene_symbol(query_token) if direction == "gene_to_mirnas" else None,
         "sql_selected_columns": list(selected_columns),
         "sql_order_columns": list(order_columns),
         "primary_mirna_variants": list(mirna_variants or []),

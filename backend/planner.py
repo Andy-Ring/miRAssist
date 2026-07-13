@@ -129,6 +129,47 @@ _PHENOTYPE_PATTERNS = [
     (re.compile(r"\b(emt|epithelial[- ]mesenchymal transition)\b", re.IGNORECASE), "EMT"),
     (re.compile(r"\b(energy metabolism|metabolism|metabolic reprogramming)\b", re.IGNORECASE), "energy metabolism"),
 ]
+_MIRNA_TEXT_RE = re.compile(r"\b(?:miR(?:NA)?s?|microRNAs?)\b", re.IGNORECASE)
+_MIRNA_TOKEN_RE = re.compile(r"\b(?:hsa[-_\s]*)?(?:miR|microRNA)[-_\s]*\d+[A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*(?:[-_](?:3p|5p))?\b", re.IGNORECASE)
+_GENE_TO_MIRNA_PATTERNS = [
+    re.compile(r"\bmiR(?:NA)?s?\b.*\b(?:regulat\w*|regult\w*|regulte|target\w*|bind\w*)\b", re.IGNORECASE),
+    re.compile(r"\b(?:regulat\w*|regult\w*|regulte|target\w*|bind\w*)\b.*\b(?:by\s+)?miR(?:NA)?s?\b", re.IGNORECASE),
+    re.compile(r"\bmiR(?:NA)?\s+regulators?\s+of\b", re.IGNORECASE),
+    re.compile(r"\bwhat\s+regulates\b", re.IGNORECASE),
+]
+_STOPWORD_ENTITY_TOKENS = {
+    "A",
+    "AN",
+    "AND",
+    "ARE",
+    "AS",
+    "BY",
+    "CANDIDATE",
+    "DO",
+    "DOES",
+    "FOR",
+    "GENE",
+    "GENES",
+    "IN",
+    "IS",
+    "MAY",
+    "MIR",
+    "MIRNA",
+    "MIRNAS",
+    "OF",
+    "PREDICTED",
+    "REGULATE",
+    "REGULATES",
+    "REGULTE",
+    "REGULATORS",
+    "TARGET",
+    "TARGETING",
+    "TARGETS",
+    "THE",
+    "TO",
+    "WHAT",
+    "WHICH",
+}
 _DIRECTIONAL_PATHWAY_TERMS = {
     "cell migration": {
         "negative_regulator": [
@@ -293,6 +334,55 @@ def _infer_phenotype_name(text: str) -> Optional[str]:
         if pattern.search(text):
             return phenotype
     return None
+
+
+def _looks_like_mirna_query_text(question: str) -> bool:
+    return bool(_MIRNA_TOKEN_RE.search(str(question or "")))
+
+
+def _looks_like_gene_to_mirnas_question(question: str) -> bool:
+    text = str(question or "")
+    if not _MIRNA_TEXT_RE.search(text):
+        return False
+    if _looks_like_mirna_query_text(text):
+        return False
+    return any(pattern.search(text) for pattern in _GENE_TO_MIRNA_PATTERNS) or bool(_extract_likely_gene_symbol(text))
+
+
+def _extract_likely_gene_symbol(question: str) -> Optional[str]:
+    text = str(question or "")
+    clean = re.sub(r"[^\w\s-]", " ", text)
+    tokens = [token.strip("-_") for token in clean.split() if token.strip("-_")]
+    candidates: List[str] = []
+    for token in tokens:
+        normalized = re.sub(r"[^A-Za-z0-9]", "", token).upper()
+        if not normalized or normalized in _STOPWORD_ENTITY_TOKENS:
+            continue
+        if normalized.startswith("MIR") or normalized.startswith("MICRORNA"):
+            continue
+        if 2 <= len(normalized) <= 15 and any(ch.isalpha() for ch in normalized):
+            candidates.append(normalized)
+    return candidates[-1] if candidates else None
+
+
+def _apply_direction_text_overrides(qs: Dict[str, Any], question: str) -> None:
+    if not _looks_like_gene_to_mirnas_question(question):
+        return
+
+    inferred_gene = _extract_likely_gene_symbol(question)
+    if not inferred_gene:
+        return
+
+    qs["mode"] = "gene_to_mirnas"
+    qs["gene"] = str(qs.get("gene") or inferred_gene).strip().upper()
+    qs["mirna"] = None
+    qs.setdefault("debug_warnings", [])
+    warning = (
+        "Planner direction corrected to gene_to_mirnas from question phrasing; "
+        f"using gene {qs['gene']}."
+    )
+    if warning not in qs["debug_warnings"]:
+        qs["debug_warnings"].append(warning)
 
 
 def _enrich_phenotype_context(question: str, context: Dict[str, Any]) -> Dict[str, Any]:
@@ -506,6 +596,8 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
 
     if qs["mode"] not in ("mirna_to_targets", "gene_to_mirnas"):
         qs["mode"] = "mirna_to_targets"
+
+    _apply_direction_text_overrides(qs, question)
 
     direction = qs["phenotype_context"].get("direction")
     if direction not in {"promotes", "suppresses", "increases", "decreases", "associated", None}:

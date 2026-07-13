@@ -17,6 +17,12 @@ from backend.config import (
     get_debug_max_rows,
     get_debug_ui,
 )
+from frontend.evidence_table import (
+    build_evidence_shortlist_table,
+    evidence_shortlist_csv_bytes,
+    evidence_shortlist_filename,
+    normalize_direction_label,
+)
 from frontend.help_content import (
     get_about_evidence_markdown,
     get_how_to_use_markdown,
@@ -582,6 +588,14 @@ if result:
         st.error(result.get("error", f"Backend returned status: {result_status}"))
     else:
         shortlist = result.get("shortlist", [])
+        retrieval_diagnostics = result.get("retrieval_diagnostics") or {}
+        resolved_direction = (
+            retrieval_diagnostics.get("query_direction")
+            or retrieval_diagnostics.get("direction")
+            or (extract_queryspec(result).get("mode") if extract_queryspec(result) else None)
+        )
+        query_id = st.session_state.get("last_query_id") or result.get("query_id")
+        shortlist_df = build_evidence_shortlist_table(shortlist, resolved_direction)
         synthesis_disabled = bool(result.get("disable_synthesis"))
 
         if synthesis_disabled:
@@ -615,6 +629,21 @@ if result:
                 for exp in experiments:
                     st.markdown(f"- {exp}")
 
+        st.markdown("## Evidence shortlist")
+        if not shortlist_df.empty:
+            st.caption(
+                f"Retrieved candidates shown in backend order. Direction: `{normalize_direction_label(resolved_direction)}`."
+            )
+            st.table(shortlist_df)
+            st.download_button(
+                label="Download evidence shortlist as CSV",
+                data=evidence_shortlist_csv_bytes(shortlist_df),
+                file_name=evidence_shortlist_filename(query_id),
+                mime="text/csv",
+            )
+        else:
+            st.info("Shortlist is empty.")
+
         with st.expander("Planner output (QuerySpec)", expanded=False):
             queryspec = extract_queryspec(result)
             if queryspec:
@@ -628,8 +657,7 @@ if result:
                     "in the result payload, or it is stored under a response key not yet handled."
                 )
 
-        with st.expander("Retrieval debug", expanded=False):
-            retrieval_diagnostics = result.get("retrieval_diagnostics") or {}
+        with st.expander("Advanced debug details", expanded=False):
             debug_summary = {
                 "supabase_table_name": retrieval_diagnostics.get("supabase_table_name"),
                 "query_direction": retrieval_diagnostics.get("query_direction")
@@ -637,8 +665,10 @@ if result:
                 "normalized_mirna": retrieval_diagnostics.get("variants_used")
                 or retrieval_diagnostics.get("exact_mirna_variants_used")
                 or retrieval_diagnostics.get("query_mirna_normalized"),
+                "normalized_gene": retrieval_diagnostics.get("query_gene_normalized"),
                 "normalized_mirna_column": retrieval_diagnostics.get("sql_mirna_norm_column")
                 or retrieval_diagnostics.get("normalized_mirna_column_used"),
+                "normalized_gene_column": retrieval_diagnostics.get("sql_gene_norm_column"),
                 "sort_column_used": retrieval_diagnostics.get("score_column_used")
                 or retrieval_diagnostics.get("sort_column_used")
                 or retrieval_diagnostics.get("learned_score_column"),
@@ -653,48 +683,3 @@ if result:
             if prompt_debug.get("candidate_order_sent_to_llm"):
                 st.markdown("#### Candidate order sent to synthesis")
                 st.json(prompt_debug["candidate_order_sent_to_llm"])
-
-        with st.expander("Evidence shortlist", expanded=False):
-            if isinstance(shortlist, list) and len(shortlist) > 0:
-                max_rows = max(1, int(get_debug_max_rows()))
-                df = pd.DataFrame(shortlist[:max_rows])
-                preferred_columns = [
-                    "gene_symbol",
-                    "mirna_name",
-                    "mirassist_xgboost_score",
-                    "score_column_used",
-                    "evidence_family_count",
-                    "sequence_complementarity_available",
-                    "thermodynamic_stability_available",
-                    "sequence_conservation_available",
-                    "target_site_accessibility_available",
-                    "functional_binding_available",
-                    "functional_repression_available",
-                    "learned_score_xgb_raw_v1",
-                    "learned_score_xgb_raw_nomissing_v1",
-                    "learned_score_used",
-                    "retrieval_rank_score",
-                    "retrieval_score",
-                    "learned_score_model_version",
-                    "learned_score_feature_set",
-                    "support_count",
-                    "seed_match_type",
-                    "n_seed_sites",
-                    "rnahybrid_mfe",
-                    "rnahybrid_strength",
-                    "rnaplfold_best_seed_unpaired_prob",
-                    "rnaplfold_n_sites_scored",
-                    "targetscan_context_score",
-                    "targetscan_context_score_support_percentile",
-                    "clip_max_score",
-                    "clip_n_experiments",
-                    "tcga_mean_spearman_rho",
-                ]
-                ordered_columns = [col for col in preferred_columns if col in df.columns]
-                ordered_columns.extend([col for col in df.columns if col not in ordered_columns])
-                df = df.loc[:, ordered_columns]
-                if len(shortlist) > max_rows:
-                    st.caption(f"Showing the first {max_rows} debug rows.")
-                st.json(df.to_dict(orient="records"))
-            else:
-                st.info("Shortlist is empty.")

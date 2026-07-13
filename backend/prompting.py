@@ -132,12 +132,15 @@ def build_user_prompt(
     if direction == "mirna_to_targets":
         task = "Identify and rank target genes regulated by the miRNA."
         output_item = "genes"
+        direction_label = "miRNA -> targets"
     elif direction == "gene_to_mirnas":
-        task = "Identify and rank miRNAs that regulate the gene."
+        task = "Identify and rank candidate miRNA regulators of the queried gene."
         output_item = "miRNAs"
+        direction_label = "gene -> miRNAs"
     else:
         task = "Identify and rank relevant candidates from the evidence."
         output_item = "candidates"
+        direction_label = "unknown"
 
     ctx_lines: List[str] = []
     if cancer_name or cancer:
@@ -178,6 +181,13 @@ def build_user_prompt(
         ctx_lines.append(
             "- Retrieval notes: " + "; ".join([str(item) for item in (retrieval_diagnostics.get("user_notes") or []) if str(item).strip()])
         )
+    query_entity = ""
+    if direction == "gene_to_mirnas" and cards:
+        query_entity = str(cards[0].get("gene_symbol") or "").strip()
+    elif direction == "mirna_to_targets" and cards:
+        query_entity = str(cards[0].get("mirna_name") or "").strip()
+    if query_entity:
+        ctx_lines.append(f"- Resolved query: {query_entity}; task is {direction_label}.")
 
     available_n = len(cards)
     top_n = int(requested_results or available_n)
@@ -189,6 +199,7 @@ def build_user_prompt(
 Requirements:
 - Requested ranked results: {top_n}
 - Available evidence cards: {available_n}
+- Resolved task type: {direction_label}
 - Preserve the available evidence card order; it is the backend ranking order.
 - Return EXACTLY {top_n} UNIQUE ranked {output_item} unless fewer than {top_n} candidates passed the filters.
 - Use only the evidence cards below; do not invent extra support.
@@ -205,6 +216,8 @@ Requirements:
 - Do not invent percentiles, pathway membership, or gene-phenotype links.
 - Do not claim a candidate belongs to a pathway unless the card explicitly says it passed the pathway filter or names the pathways.
 - If directional phenotype logic is provided, explain it as a repression-consistent candidate-target interpretation rather than proof of causality.
+- For gene -> miRNAs tasks, describe results as candidate miRNA regulators of the queried gene or miRNAs predicted to target/regulate that gene.
+- For gene -> miRNAs tasks, do not describe the gene as a miRNA and do not call the returned miRNAs "targets" of the gene.
 - Use the required output structure from the system prompt.
 
 User question:
