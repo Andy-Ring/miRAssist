@@ -85,15 +85,6 @@ st.markdown(
     :root {
         --mir-green: #5DBB63;
         --mir-teal: #2CA6A4;
-        --mir-dark: #0E1117;
-    }
-
-    body {
-        background-color: var(--mir-dark);
-    }
-
-    h1, h2, h3 {
-        color: var(--mir-teal);
     }
 
     .stButton>button {
