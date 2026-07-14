@@ -86,7 +86,7 @@ _startup_log("sidebar context entered")
 
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.9.2"
+APP_VERSION = "0.10.0"
 APP_AUTHOR = "Andy Ring"
 DEFAULT_UI_CANDIDATE_POOL = 10
 DEFAULT_UI_MIN_SUPPORT = 2

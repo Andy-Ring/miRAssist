@@ -60,6 +60,60 @@ def _load_local_dotenv() -> None:
 _load_local_dotenv()
 
 
+# ---------------------------------------------------------------------------
+# Evidence snapshot settings (GitHub-hosted parquet; Supabase no longer required)
+# ---------------------------------------------------------------------------
+import json as _json
+
+_SKILL_SETTINGS_CACHE: dict | None = None
+
+DEFAULT_EVIDENCE_URL = (
+    "https://github.com/Andy-Ring/miRAssist/releases/download/"
+    "v0.0.1/mirassist_evidence_pairs.parquet"
+)
+
+
+def _load_skill_settings() -> dict:
+    global _SKILL_SETTINGS_CACHE
+    if _SKILL_SETTINGS_CACHE is not None:
+        return _SKILL_SETTINGS_CACHE
+    settings: dict = {}
+    for base in (ROOT_DIR, ROOT_DIR / "mirassist-skill" / "scripts"):
+        path = base / "skill_settings.json"
+        try:
+            if path.exists():
+                settings = _json.loads(path.read_text(encoding="utf-8")) or {}
+                break
+        except Exception:
+            settings = {}
+    _SKILL_SETTINGS_CACHE = settings
+    return settings
+
+
+def _setting(env_name: str, key: str, default: str = "") -> str | None:
+    return _first_nonempty(os.getenv(env_name), _load_skill_settings().get(key), default)
+
+
+def get_supabase_url() -> str | None:
+    return _setting("MIRASSIST_SUPABASE_URL", "supabase_url")
+
+
+def get_supabase_anon_key() -> str | None:
+    return _setting("MIRASSIST_SUPABASE_ANON_KEY", "supabase_anon_key")
+
+
+def get_evidence_parquet_url() -> str | None:
+    return _setting("MIRASSIST_EVIDENCE_URL", "evidence_parquet_url", DEFAULT_EVIDENCE_URL)
+
+
+def supabase_rest_configured() -> bool:
+    url = get_supabase_url()
+    key = get_supabase_anon_key()
+    if not url or not key:
+        return False
+    return "PASTE_YOUR" not in str(key)
+
+
 def get_database_url() -> str | None:
     return _first_nonempty(os.getenv("DATABASE_URL"))
 
@@ -78,19 +132,36 @@ def get_jobstore_backend() -> str:
 
 
 def get_evidence_backend() -> str:
-    requested = (os.getenv("EVIDENCE_BACKEND", "parquet") or "parquet").strip().lower()
-    if requested not in {"parquet", "postgres"}:
-        requested = "parquet"
-    if requested == "postgres" and not database_configured():
+    # miRAssist reads evidence from a GitHub-hosted parquet snapshot by default, so
+    # neither the app nor the skill requires Supabase. Explicit values still work:
+    # parquet (local file), postgres/rest (live Supabase) remain available.
+    requested = (os.getenv("EVIDENCE_BACKEND", "") or "").strip().lower()
+    if requested in {"github", "snapshot", "github_snapshot"}:
+        return "github"
+    if requested in {"rest", "supabase", "supabase_rest"}:
+        return "rest"
+    if requested == "parquet":
         return "parquet"
-    return requested
+    if requested == "postgres":
+        return "postgres" if database_configured() else "github"
+    # No explicit backend: use a configured local parquet if present, else the snapshot.
+    if _first_nonempty(os.getenv("MIRASSIST_EVIDENCE"), os.getenv("MIRASSIST_EVIDENCE_PATH")):
+        return "parquet"
+    return "github"
 
 
 def get_evidence_table() -> str:
-    table_name = (os.getenv("EVIDENCE_TABLE", "public.mirassist_evidence_pairs") or "public.mirassist_evidence_pairs").strip()
+    table_name = (_setting("EVIDENCE_TABLE", "evidence_table", "public.mirassist_evidence_pairs")
+                  or "public.mirassist_evidence_pairs").strip()
     if "." not in table_name:
         table_name = f"public.{table_name}"
     return table_name
+
+
+def get_evidence_table_bare() -> str:
+    """Table name without schema prefix, as PostgREST expects."""
+    name = get_evidence_table()
+    return name.split(".", 1)[1] if "." in name else name
 
 
 def resolve_evidence_path(explicit: str | None = None) -> Path:

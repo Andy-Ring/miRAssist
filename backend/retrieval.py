@@ -1965,9 +1965,18 @@ def retrieve_from_queryspec(
         user_requested_strict_support=user_requested_strict_support,
     )
 
-    fetch_diagnostics: Dict[str, Any] = {"evidence_backend": get_evidence_backend()}
-    if get_evidence_backend() == "postgres":
+    evidence_backend = get_evidence_backend()
+    fetch_diagnostics: Dict[str, Any] = {"evidence_backend": evidence_backend}
+    if evidence_backend == "postgres":
         ev, fetch_diagnostics = _fetch_postgres_candidate_pool(str(token), cfg)
+    elif evidence_backend == "rest":
+        from backend.supabase_rest import fetch_rest_candidate_pool
+
+        ev, fetch_diagnostics = fetch_rest_candidate_pool(str(token), cfg)
+    elif evidence_backend == "github":
+        from backend.parquet_snapshot import fetch_parquet_candidate_pool
+
+        ev, fetch_diagnostics = fetch_parquet_candidate_pool(str(token), cfg)
     elif ev is None:
         ev = load_evidence()
 

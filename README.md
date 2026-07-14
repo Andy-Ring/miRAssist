@@ -62,13 +62,16 @@ Question ─► Planner ─► Retrieval ─► XGBoost ranking ─► Synthesiz
    the learned score is missing.
 4. **Synthesizer** writes the explanation using only backend-computed values and labels.
 
-The two deployments differ only in *who plays the planner/synthesizer* and *where the
-evidence lives*:
+The two deployments differ only in *who plays the planner/synthesizer*:
 
 | | Planner & synthesizer | Evidence source |
 |---|---|---|
-| **Streamlit app** | OpenAI-hosted models | Supabase (Postgres), live |
+| **Streamlit app** | OpenAI-hosted models | GitHub-hosted parquet snapshot (Supabase no longer required) |
 | **Claude skill** | Claude itself (no OpenAI key) | GitHub-hosted parquet snapshot, cached locally |
+
+Both read the same evidence snapshot published on GitHub Releases, so **neither requires a
+live database**. (Live Supabase Postgres/REST remains available as an option — see the
+configuration reference.)
 
 ## Evidence sources
 
@@ -103,6 +106,9 @@ The app is live on Posit Connect Cloud — just open it and start asking questio
 
 ### Run it yourself
 
+The app needs only an OpenAI key — evidence is pulled from the GitHub snapshot and jobs are
+stored on the local filesystem, so **no database is required**.
+
 ```bash
 git clone https://github.com/Andy-Ring/miRAssist.git
 cd miRAssist
@@ -111,33 +117,33 @@ pip install -r requirements.txt
 cp .env.example .env
 ```
 
-Edit `.env` with your OpenAI key and the Supabase evidence database:
+Edit `.env` and set your OpenAI key (the evidence and job-storage defaults already work):
 
 ```bash
 MIRASSIST_LLM_BACKEND=openai
-OPENAI_API_KEY=sk-...                     # your OpenAI key
+OPENAI_API_KEY=sk-...
 MIRASSIST_PLANNER_MODEL=gpt-5.4-nano
 MIRASSIST_SYNTH_MODEL=gpt-5.4-mini
 
-EVIDENCE_BACKEND=postgres
-EVIDENCE_TABLE=mirassist_evidence_pairs
-DATABASE_URL=postgresql://postgres.vkbkeernvifbefwmkaae:YOUR_PASSWORD@aws-1-us-west-2.pooler.supabase.com:6543/postgres
-MIRASSIST_USE_LEARNED_SCORE=1
+EVIDENCE_BACKEND=github     # downloads the evidence snapshot from GitHub Releases
+JOBSTORE_BACKEND=filesystem # no database
 ```
 
-Get the database password from the Supabase dashboard (**Project Settings → Database**).
-Never commit a real password — keep it in `.env` (already git-ignored) or your host's
-secret manager. Then run:
+Then run:
 
 ```bash
 streamlit run app.py
 ```
 
-**Deploying on Posit Connect Cloud:** use `app.py` as the entry point and set the
-environment variables above through Posit's environment/secrets UI rather than committing
-`.env`. The bundled `uvicorn` shim pins Streamlit to its legacy websocket backend to avoid
-`403` upgrade failures on Posit's newer builds; heavy local-inference dependencies (e.g.
-`torch`) are intentionally excluded.
+On first query the app downloads the evidence snapshot (~106 MB) and caches it under
+`~/.cache/mirassist`; later queries reuse the cache.
+
+**Deploying on Posit Connect Cloud:** use `app.py` as the entry point and set `OPENAI_API_KEY`
+through Posit's environment/secrets UI. The evidence snapshot downloads at runtime, so the
+deployment needs outbound access to GitHub release assets and a writable cache dir (set
+`MIRASSIST_CACHE_DIR` if the home directory isn't writable). The bundled `uvicorn` shim pins
+Streamlit to its legacy websocket backend to avoid `403` upgrade failures on Posit's newer
+builds; heavy local-inference dependencies (e.g. `torch`) are intentionally excluded.
 
 ---
 
@@ -184,7 +190,8 @@ output-column reference.
 
 ### Publishing your own copy
 
-If you fork miRAssist, publish the evidence snapshot once so the skill can fetch it:
+If you fork miRAssist, publish the evidence snapshot once so both the app and skill can
+fetch it:
 
 1. **Export the evidence table to parquet** with the bundled helper (guarantees the
    learned-score and percentile columns retrieval needs):
@@ -200,12 +207,10 @@ If you fork miRAssist, publish the evidence snapshot once so the skill can fetch
 
 2. **Attach the parquet to a public GitHub Release** of your fork.
 
-3. **Set the asset URL** in
-   [`mirassist-skill/scripts/skill_settings.json`](mirassist-skill/scripts/skill_settings.json):
-
-   ```json
-   { "evidence_parquet_url": "https://github.com/Andy-Ring/miRAssist/releases/download/v0.0.1/mirassist_evidence_pairs.parquet" }
-   ```
+3. **Point both entry points at the asset URL:** set `evidence_parquet_url` in
+   [`mirassist-skill/scripts/skill_settings.json`](mirassist-skill/scripts/skill_settings.json)
+   (skill) and `DEFAULT_EVIDENCE_URL` in [`backend/config.py`](backend/config.py) — or the
+   `MIRASSIST_EVIDENCE_URL` env var — for the app.
 
 The snapshot is read-only public data — no keys required for end users. When the data
 changes, upload a new release and update the URL; caches re-download automatically.
@@ -213,10 +218,9 @@ Retrieval reads only the rows for the queried miRNA/gene (parquet predicate push
 the full table is never loaded into memory.
 
 > **Note on sandboxed environments.** GitHub *release-asset* downloads must be reachable
-> from wherever the skill runs. If a locked-down environment blocks them, the CLI returns a
+> from wherever the code runs. If a locked-down environment blocks them, the tool returns a
 > clear "failed to download" error; alternatives are `EVIDENCE_BACKEND=parquet` +
-> `MIRASSIST_EVIDENCE=/local.parquet` (fully offline) or `EVIDENCE_BACKEND=rest` against
-> Supabase (needs the Supabase host allowlisted).
+> `MIRASSIST_EVIDENCE=/local.parquet` (fully offline) or a live Supabase connection.
 
 ---
 
@@ -224,16 +228,17 @@ the full table is never loaded into memory.
 
 | Variable | Purpose | Typical value |
 |---|---|---|
-| `EVIDENCE_BACKEND` | Evidence source | `github` (skill default) / `postgres` (app) / `parquet` (offline) / `rest` |
-| `MIRASSIST_EVIDENCE_URL` | GitHub Release snapshot URL (skill default) | `https://github.com/Andy-Ring/miRAssist/releases/download/v0.0.1/mirassist_evidence_pairs.parquet` |
+| `EVIDENCE_BACKEND` | Evidence source | `github` (default) / `parquet` (offline) / `postgres` / `rest` |
+| `MIRASSIST_EVIDENCE_URL` | Snapshot URL (github mode) | `https://github.com/Andy-Ring/miRAssist/releases/download/v0.0.1/mirassist_evidence_pairs.parquet` |
+| `MIRASSIST_CACHE_DIR` | Snapshot cache dir | `~/.cache/mirassist` |
 | `MIRASSIST_EVIDENCE` | Local parquet path (offline mode) | `/path/to/evidence.parquet` |
-| `EVIDENCE_TABLE` | Evidence table name | `mirassist_evidence_pairs` |
+| `JOBSTORE_BACKEND` | Job persistence (app) | `filesystem` / `postgres` |
 | `MIRASSIST_USE_LEARNED_SCORE` | Enable XGBoost ranking | `1` |
 | `MIRASSIST_LEARNED_SCORE_COLUMN` | Learned-score column | `learned_score_xgb_raw_v1` |
 | `MIRASSIST_DEFAULT_RESULT_COUNT` | Ranked results shown | `5` |
-| `DATABASE_URL` | Supabase Postgres connection (app) | `postgresql://…@…pooler.supabase.com:6543/postgres` |
 | `OPENAI_API_KEY` | OpenAI key (app only) | `sk-...` |
 | `MIRASSIST_PLANNER_MODEL` / `MIRASSIST_SYNTH_MODEL` | LLM models (app only) | `gpt-5.4-nano` / `gpt-5.4-mini` |
+| `DATABASE_URL` | Live Supabase Postgres (optional/legacy) | `postgresql://…pooler.supabase.com:6543/postgres` |
 
 ---
 
@@ -243,11 +248,11 @@ the full table is never loaded into memory.
 miRAssist/
 ├── app.py                     # Streamlit entry point (hosted on Posit)
 ├── frontend/                  # Streamlit UI
-├── backend/                   # planner, retrieval, XGBoost ranking, pathways, synthesizer
-├── data/processed/            # evidence + pathway data
+├── backend/                   # planner, retrieval, XGBoost ranking, pathways, synthesizer,
+│                              #   snapshot loader (evidence_bootstrap, parquet_snapshot)
+├── data/processed/            # pathway data
 ├── evaluation/                # benchmarking & paper-figure pipeline
-├── mirassist-skill/           # Claude skill (SKILL.md, retrieval CLI, snapshot loader,
-│                              #   export_snapshot.py, bundled core)
+├── mirassist-skill/           # Claude skill (SKILL.md, retrieval CLI, export_snapshot.py)
 ├── mirassist.skill            # packaged, installable skill
 ├── requirements.txt           # Streamlit-app dependencies
 └── .env.example               # configuration template

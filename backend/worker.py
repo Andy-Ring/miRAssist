@@ -144,7 +144,10 @@ def run_query_job(
 
         evidence_backend = get_evidence_backend()
         ev = None
-        if evidence_backend != "postgres":
+        # Only the local-parquet dev backend loads the full table into memory and
+        # computes percentiles here. The github snapshot, postgres, and rest backends
+        # fetch a bounded candidate pool and rely on precomputed percentile columns.
+        if evidence_backend == "parquet":
             ev = load_evidence()
 
         shortlist_df, direction, retrieval_diagnostics = retrieve_from_queryspec(
@@ -153,12 +156,13 @@ def run_query_job(
             pathway_selection=pathway_selection_internal,
         )
         retrieval_diagnostics["evidence_backend"] = evidence_backend
-        if evidence_backend == "postgres":
-            retrieval_diagnostics.setdefault("warnings", []).append(
-                "Feature percentile annotation was skipped in postgres production mode to avoid loading the full evidence table."
-            )
-        else:
+        if evidence_backend == "parquet":
             shortlist_df = annotate_feature_percentiles(shortlist_df, ev)
+        else:
+            retrieval_diagnostics.setdefault("warnings", []).append(
+                "Feature percentile annotation was skipped; using precomputed percentile "
+                "columns from the evidence snapshot/database."
+            )
 
         shortlist_records = _limit_debug_records(shortlist_df)
         synth_shortlist_df = shortlist_df.head(SYNTHESIS_EVIDENCE_LIMIT).copy()
