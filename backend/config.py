@@ -103,7 +103,10 @@ def get_supabase_anon_key() -> str | None:
 
 
 def get_evidence_parquet_url() -> str | None:
-    return _setting("MIRASSIST_EVIDENCE_URL", "evidence_parquet_url", DEFAULT_EVIDENCE_URL)
+    url = _setting("MIRASSIST_EVIDENCE_URL", "evidence_parquet_url", DEFAULT_EVIDENCE_URL)
+    if url and any(token in str(url) for token in ("YOUR_GITHUB_USER", "<you>", "PASTE_YOUR")):
+        return DEFAULT_EVIDENCE_URL
+    return url
 
 
 def supabase_rest_configured() -> bool:

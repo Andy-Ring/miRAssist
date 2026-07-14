@@ -1991,11 +1991,19 @@ def retrieve_from_queryspec(
     diagnostics.update(
         {
             "evidence_backend": fetch_diagnostics.get("evidence_backend", diagnostics.get("evidence_backend")),
+            "evidence_source": fetch_diagnostics.get("evidence_source")
+            or fetch_diagnostics.get("snapshot_path")
+            or fetch_diagnostics.get("supabase_table_name")
+            or (
+                get_evidence_table()
+                if fetch_diagnostics.get("evidence_backend") in {"postgres", "rest"}
+                else None
+            ),
             "db_candidate_limit": fetch_diagnostics.get("db_candidate_limit"),
             "n_rows_fetched_from_db": fetch_diagnostics.get("n_rows_fetched_from_db"),
             "sql_selected_column_count": fetch_diagnostics.get("sql_selected_column_count"),
             "sql_returned_column_count": fetch_diagnostics.get("sql_returned_column_count"),
-            "supabase_table_name": fetch_diagnostics.get("supabase_table_name") or get_evidence_table(),
+            "supabase_table_name": fetch_diagnostics.get("supabase_table_name"),
             "sort_column_used": diagnostics.get("score_column_used")
             or fetch_diagnostics.get("sort_column_used")
             or fetch_diagnostics.get("learned_score_column"),

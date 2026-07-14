@@ -5,6 +5,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import json
 import os
 import time
 import traceback
@@ -363,6 +364,30 @@ def typewriter_markdown(md: str, container, cps: int = 60, chunk: str = "word"):
             time.sleep(delay)
 
 
+def dataframe_to_markdown_table(df: pd.DataFrame, max_rows: int = 20) -> str:
+    if df is None or df.empty:
+        return ""
+
+    display_df = df.head(max_rows).copy()
+    display_df = display_df.fillna("")
+
+    def fmt(value) -> str:
+        if isinstance(value, float):
+            return f"{value:.4g}"
+        text = str(value)
+        text = text.replace("\n", " ").replace("|", "\\|")
+        return text
+
+    columns = [str(col) for col in display_df.columns]
+    lines = [
+        "| " + " | ".join(columns) + " |",
+        "| " + " | ".join(["---"] * len(columns)) + " |",
+    ]
+    for _, row in display_df.iterrows():
+        lines.append("| " + " | ".join(fmt(row[col]) for col in display_df.columns) + " |")
+    return "\n".join(lines)
+
+
 def sidebar_footer(author: str, version: str):
     st.sidebar.divider()
     st.sidebar.caption(APP_NAME)
@@ -588,16 +613,7 @@ if result:
 
         summary_md = pick_summary_markdown(result)
         if summary_md:
-            placeholder = st.empty()
-            if st.session_state.get("animate_answer", True):
-                typewriter_markdown(
-                    summary_md,
-                    placeholder,
-                    cps=int(st.session_state.get("typing_speed", 80)),
-                    chunk=st.session_state.get("typing_mode", "word"),
-                )
-            else:
-                placeholder.markdown(summary_md, unsafe_allow_html=False)
+            st.markdown(summary_md, unsafe_allow_html=False)
         else:
             st.info("No summary text found in backend response.")
 
@@ -612,7 +628,9 @@ if result:
             st.caption(
                 f"Retrieved candidates shown in backend order. Direction: `{normalize_direction_label(resolved_direction)}`."
             )
-            st.table(shortlist_df)
+            st.markdown(dataframe_to_markdown_table(shortlist_df), unsafe_allow_html=False)
+            if len(shortlist_df) > 20:
+                st.caption(f"Showing the first 20 of {len(shortlist_df)} rows. Download the CSV for the full shortlist.")
             st.download_button(
                 label="Download evidence shortlist as CSV",
                 data=evidence_shortlist_csv_bytes(shortlist_df),
@@ -625,7 +643,7 @@ if result:
         with st.expander("Planner output (QuerySpec)", expanded=False):
             queryspec = extract_queryspec(result)
             if queryspec:
-                st.json(queryspec)
+                st.code(json.dumps(queryspec, indent=2, default=str), language="json")
             else:
                 st.warning(
                     "No planner/queryspec object was found at the expected response paths."
@@ -637,6 +655,10 @@ if result:
 
         with st.expander("Advanced debug details", expanded=False):
             debug_summary = {
+                "evidence_backend": retrieval_diagnostics.get("evidence_backend"),
+                "evidence_source": retrieval_diagnostics.get("evidence_source")
+                or retrieval_diagnostics.get("snapshot_path")
+                or retrieval_diagnostics.get("supabase_table_name"),
                 "supabase_table_name": retrieval_diagnostics.get("supabase_table_name"),
                 "query_direction": retrieval_diagnostics.get("query_direction")
                 or retrieval_diagnostics.get("direction"),
@@ -656,8 +678,11 @@ if result:
                 or retrieval_diagnostics.get("sql_selected_column_count"),
                 "sql_order_columns": retrieval_diagnostics.get("sql_order_columns"),
             }
-            st.json(debug_summary)
+            st.code(json.dumps(debug_summary, indent=2, default=str), language="json")
             prompt_debug = result.get("prompt_bundle_debug") or {}
             if prompt_debug.get("candidate_order_sent_to_llm"):
                 st.markdown("#### Candidate order sent to synthesis")
-                st.json(prompt_debug["candidate_order_sent_to_llm"])
+                st.code(
+                    json.dumps(prompt_debug["candidate_order_sent_to_llm"], indent=2, default=str),
+                    language="json",
+                )

@@ -125,6 +125,7 @@ def fetch_parquet_candidate_pool(query_token: str, cfg: "Any") -> Tuple[pd.DataF
 
     diagnostics: Dict[str, Any] = {
         "evidence_backend": "snapshot",
+        "evidence_source": path,
         "supabase_table_name": None,
         "snapshot_path": path,
         "db_candidate_limit": int(get_db_candidate_limit()),
