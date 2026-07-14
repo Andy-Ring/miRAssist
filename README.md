@@ -231,7 +231,7 @@ miRAssist/
 If you use miRAssist in your research, please cite:
 
 > Ring A, Xi Y. *miRAssist: a context-aware, evidence-integration framework for
-> interpretable miRNA-target prioritization.*
+> interpretable miRNA-target prioritization.* In preparation 
 
 - **Code:** https://github.com/Andy-Ring/miRAssist
 - **App:** https://andy-ring-mirassist.share.connect.posit.cloud/
