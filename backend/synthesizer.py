@@ -10,6 +10,7 @@ from backend.prompting import SYSTEM_PROMPT
 
 def run_synthesizer(bundle: Dict[str, Any], model: str = None) -> Dict[str, Any]:
     selected_model = model or get_synth_model()
+    print("[miRAssist] synthesizer starting", flush=True)
     out = chat(
         system=bundle.get("system_prompt", SYSTEM_PROMPT),
         user=bundle["user_prompt"],
@@ -18,6 +19,7 @@ def run_synthesizer(bundle: Dict[str, Any], model: str = None) -> Dict[str, Any]
         temperature=get_synth_temperature(),
         top_p=0.95,
     )
+    print("[miRAssist] synthesizer received text", flush=True)
 
     return {
         "raw_text": out,

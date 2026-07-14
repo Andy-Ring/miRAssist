@@ -95,50 +95,61 @@ def _chat_openai(
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set for openai backend.")
 
-    try:
-        from openai import OpenAI
-    except ImportError as exc:
-        raise RuntimeError(
-            "The openai package is not installed. Add it to the backend environment first."
-        ) from exc
-
-    client_kwargs = {
-        "api_key": api_key,
-        "timeout": get_openai_timeout(),
-    }
     base_url = get_openai_base_url()
     if base_url:
-        client_kwargs["base_url"] = base_url
+        endpoint = base_url.rstrip("/") + "/chat/completions"
+    else:
+        endpoint = "https://api.openai.com/v1/chat/completions"
 
-    client = OpenAI(**client_kwargs)
+    payload = {
+        "model": model or get_model_name(),
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "max_completion_tokens": int(max_new_tokens),
+        "temperature": float(temperature),
+        "top_p": float(top_p),
+    }
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
 
+    print("[miRAssist] OpenAI request starting via requests", flush=True)
     try:
-        completion = client.chat.completions.create(
-            model=model or get_model_name(),
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            max_completion_tokens=int(max_new_tokens),
-            temperature=float(temperature),
-            top_p=float(top_p),
+        response = requests.post(
+            endpoint,
+            headers=headers,
+            json=payload,
+            timeout=float(get_openai_timeout()),
         )
     except Exception as exc:
         raise RuntimeError(f"OpenAI chat completion failed: {exc}") from exc
+    print(f"[miRAssist] OpenAI request finished with status {response.status_code}", flush=True)
+    try:
+        response.raise_for_status()
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI chat completion failed: {response.text[:1000]}") from exc
 
-    choice = completion.choices[0] if completion.choices else None
-    if choice is None or choice.message is None:
+    try:
+        completion = response.json()
+    except Exception as exc:
+        raise RuntimeError(f"OpenAI chat completion returned invalid JSON: {exc}") from exc
+
+    choices = completion.get("choices") or []
+    choice = choices[0] if choices else None
+    if not isinstance(choice, dict):
         raise RuntimeError("OpenAI chat completion returned no choices.")
 
-    content = getattr(choice.message, "content", None)
+    message = choice.get("message") or {}
+    content = message.get("content")
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):
         parts = []
         for item in content:
-            text = getattr(item, "text", None)
-            if text is None and isinstance(item, dict):
-                text = item.get("text")
+            text = item.get("text") if isinstance(item, dict) else None
             if text:
                 parts.append(text)
         joined = "".join(parts).strip()
