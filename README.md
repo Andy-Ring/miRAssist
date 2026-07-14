@@ -151,7 +151,7 @@ Then run:
 streamlit run app.py
 ```
 
-'mirassist_evidence_pairs.parquet' can be downloaded from the most recent GitHub release and stored at data/processed. If the file isn't present, the app instead
+`mirassist_evidence_pairs.parquet` can be downloaded from the most recent GitHub release and stored at data/processed. If the file isn't present, the app instead
 downloads the snapshot (~106 MB) from the GitHub Release and caches it under
 `~/.cache/mirassist`.
 
