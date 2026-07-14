@@ -75,10 +75,11 @@ def _starts_with_lower(col: str, prefix: str) -> Any:
 def _base_filters(cfg: "Any", available: set) -> Optional[Any]:
     import pyarrow as pa
     import pyarrow.compute as pc
+    from backend.retrieval import MIRTARBASE_KNOWN_POSITIVE_COLUMNS
 
     exprs: List[Any] = []
     if cfg.novel and cfg.use_mirtarbase_evidence:
-        for col in ("mirtarbase_pos", "label_mirtarbase"):
+        for col in MIRTARBASE_KNOWN_POSITIVE_COLUMNS:
             if col in available:
                 exprs.append(pc.is_null(pc.field(col)) | pc.equal(pc.field(col), 0))
     if cfg.require_binding_evidence:
@@ -139,9 +140,11 @@ def _filter_snapshot_frame(
     available: set,
     pathway_gene_set: set,
 ) -> pd.Series:
+    from backend.retrieval import MIRTARBASE_KNOWN_POSITIVE_COLUMNS
+
     mask = pd.Series(True, index=df.index)
     if cfg.novel and cfg.use_mirtarbase_evidence:
-        for col in ("mirtarbase_pos", "label_mirtarbase"):
+        for col in MIRTARBASE_KNOWN_POSITIVE_COLUMNS:
             if col in df.columns:
                 values = pd.to_numeric(df[col], errors="coerce")
                 mask &= values.isna() | values.eq(0)

@@ -108,6 +108,7 @@ def _build_query_params(
     from backend.retrieval import (
         _direction_from_token,
         _first_available_column,
+        MIRTARBASE_KNOWN_POSITIVE_COLUMNS,
         _normalize_gene_symbol,
         _normalize_token,
         _resolve_score_column_from_available,
@@ -149,7 +150,7 @@ def _build_query_params(
 
     # novelty / gates
     if cfg.novel and cfg.use_mirtarbase_evidence:
-        for col in ("mirtarbase_pos", "label_mirtarbase"):
+        for col in MIRTARBASE_KNOWN_POSITIVE_COLUMNS:
             if col in available:
                 params.append(("or", f"({col}.is.null,{col}.eq.0)"))
     if cfg.require_binding_evidence:

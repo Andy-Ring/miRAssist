@@ -35,6 +35,7 @@ class NovelFilteringTests(unittest.TestCase):
                     "gene_symbol": "KEEP",
                     "support_count": 2,
                     "mirassist_xgboost_score": 0.9,
+                    "mirtarbase_known_positive": False,
                     "mirtarbase_pos": 0,
                     "label_mirtarbase": 0,
                 },
@@ -44,6 +45,7 @@ class NovelFilteringTests(unittest.TestCase):
                     "gene_symbol": "DROP_POS",
                     "support_count": 2,
                     "mirassist_xgboost_score": 0.95,
+                    "mirtarbase_known_positive": False,
                     "mirtarbase_pos": 1,
                     "label_mirtarbase": 0,
                 },
@@ -53,8 +55,19 @@ class NovelFilteringTests(unittest.TestCase):
                     "gene_symbol": "DROP_LABEL",
                     "support_count": 2,
                     "mirassist_xgboost_score": 0.85,
+                    "mirtarbase_known_positive": False,
                     "mirtarbase_pos": 0,
                     "label_mirtarbase": 1,
+                },
+                {
+                    "mirna_name": "hsa-miR-210-5p",
+                    "mirna_name_normalized": "hsa-mir-210-5p",
+                    "gene_symbol": "DROP_KNOWN_POSITIVE",
+                    "support_count": 2,
+                    "mirassist_xgboost_score": 0.99,
+                    "mirtarbase_known_positive": True,
+                    "mirtarbase_pos": 0,
+                    "label_mirtarbase": 0,
                 },
             ]
         )
@@ -85,6 +98,7 @@ class NovelFilteringTests(unittest.TestCase):
                     "gene_symbol": "KNOWN",
                     "support_count": 2,
                     "mirassist_xgboost_score": 0.95,
+                    "mirtarbase_known_positive": True,
                     "mirtarbase_pos": 1,
                     "label_mirtarbase": 1,
                 }

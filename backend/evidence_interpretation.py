@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from backend.config import use_mirtarbase_evidence
+from backend.retrieval import MIRTARBASE_KNOWN_POSITIVE_COLUMNS
 
 EVIDENCE_CATEGORY_LABELS: Dict[str, str] = {
     "sequence_complementarity": "Sequence complementarity",
@@ -638,9 +639,7 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
         caveats.append("TCGA correlation is context evidence, not direct binding evidence")
 
     curated_evidence = None
-    if allow_mirtarbase and (
-        _as_int(row.get("mirtarbase_pos"), 0) == 1 or _as_int(row.get("label_mirtarbase"), 0) == 1
-    ):
+    if allow_mirtarbase and any(_as_int(row.get(col), 0) == 1 for col in MIRTARBASE_KNOWN_POSITIVE_COLUMNS):
         curated_evidence = "Curated prior interaction support present in source data"
         caveats.append("Curated prior evidence is background support and is not one of the six family summaries")
 

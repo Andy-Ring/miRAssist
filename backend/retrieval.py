@@ -31,6 +31,11 @@ from backend.config import (
 _EVIDENCE_CACHE: Optional[pd.DataFrame] = None
 _EVIDENCE_SOURCE: Optional[str] = None
 _POSTGRES_COLUMN_CACHE: Dict[str, List[str]] = {}
+MIRTARBASE_KNOWN_POSITIVE_COLUMNS: Tuple[str, ...] = (
+    "mirtarbase_known_positive",
+    "mirtarbase_pos",
+    "label_mirtarbase",
+)
 
 PRODUCTION_EVIDENCE_COLUMNS: Tuple[str, ...] = (
     "mirna_name",
@@ -55,6 +60,7 @@ PRODUCTION_EVIDENCE_COLUMNS: Tuple[str, ...] = (
     "support_mirdb",
     "support_encori",
     "support_rnahybrid",
+    "mirtarbase_known_positive",
     "mirtarbase_pos",
     "label_mirtarbase",
     "mirdb_best_score",
@@ -401,7 +407,7 @@ def build_postgres_candidate_query(
     where_clauses: List[str] = []
 
     if cfg.novel and cfg.use_mirtarbase_evidence:
-        novelty_cols = [col for col in ("mirtarbase_pos", "label_mirtarbase") if col in available]
+        novelty_cols = [col for col in MIRTARBASE_KNOWN_POSITIVE_COLUMNS if col in available]
         for col in novelty_cols:
             where_clauses.append("COALESCE(" + quote_identifier(col) + ", 0) = 0")
 
@@ -1729,7 +1735,7 @@ def retrieve_candidates(
 
     # --- Novel mode and optional soft gates after query narrowing ---
     if cfg.novel and cfg.use_mirtarbase_evidence:
-        novelty_cols = [col for col in ("mirtarbase_pos", "label_mirtarbase") if col in df.columns]
+        novelty_cols = [col for col in MIRTARBASE_KNOWN_POSITIVE_COLUMNS if col in df.columns]
         if novelty_cols:
             novel_mask = pd.Series(True, index=df.index)
             for col in novelty_cols:
