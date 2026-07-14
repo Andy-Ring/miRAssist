@@ -7,12 +7,12 @@
 miRAssist prioritizes candidate microRNA–target interactions (MTIs) by integrating six
 families of experimental and computational evidence, ranking them with a backend XGBoost
 model, and interpreting the results through a large language model (LLM) planner and
-synthesis layer — so each ranked candidate comes with the evidence behind it.
+synthesis layer.
 
-**▶ Try it now (no install):** hosted web app on Posit Connect Cloud →
+**Try it now (no install required):** hosted web app on Posit Connect Cloud →
 **https://andy-ring-mirassist.share.connect.posit.cloud/**
 
-Or install it as a **Claude skill** and ask in natural language from inside Claude.
+Or install it as a **Claude skill** and integrate miRAssist into your Claude workflows.
 
 </div>
 
@@ -154,44 +154,30 @@ streamlit run app.py
 On first query the app downloads the evidence snapshot (~106 MB) and caches it under
 `~/.cache/mirassist`; later queries reuse the cache.
 
-**Deploying on Posit Connect Cloud:** use `app.py` as the entry point and set `OPENAI_API_KEY`
-through Posit's environment/secrets UI. The evidence snapshot downloads at runtime, so the
-deployment needs outbound access to GitHub release assets and a writable cache dir (set
-`MIRASSIST_CACHE_DIR` if the home directory isn't writable). The bundled `uvicorn` shim pins
-Streamlit to its legacy websocket backend to avoid `403` upgrade failures on Posit's newer
-builds; heavy local-inference dependencies (e.g. `torch`) are intentionally excluded.
-
 ---
 
 ## Option B — Claude skill
 
 The Claude skill wraps the same deterministic retrieval + XGBoost ranking core, but Claude
-plays the planner and synthesizer roles — so **no OpenAI key and no database password are
-needed**. On first use it downloads a one-time evidence snapshot from this repo's GitHub
+plays the planner and synthesizer roles. **no API keys are required**. On first use it downloads a one-time evidence snapshot from this repo's GitHub
 Releases and caches it locally, so **end users configure nothing**. Skill assets live in
 [`mirassist-skill/`](mirassist-skill/), with a pre-packaged installer at `mirassist.skill`.
 
-### 1. Install the skill
+### Install & use
 
-Download **[`mirassist.skill`](mirassist.skill)** from this repository, open it in Claude
-(desktop app or web), and click **Save skill**.
+1. **Download** [`mirassist_skill.zip`](https://github.com/Andy-Ring/miRAssist/releases)
+   from the latest release.
+2. In Claude, turn on **code execution** (Settings → Capabilities), then add the skill via
+   **Settings → Skills → `+` → Create skill** and select the zip.
+3. Start a new chat and ask a miRNA-target question in natural language, e.g.
+   *"Which miRNAs regulate PTEN?"* or *"Which genes does miR-21 target to promote apoptosis
+   in breast cancer?"*
 
-### 2. Install dependencies
+New to Claude skills? A step-by-step, no-jargon walkthrough is in
+[**INSTALL_SKILL.md**](INSTALL_SKILL.md).
 
-```bash
-pip install -r mirassist-skill/requirements.txt   # pandas, numpy, pyarrow, requests
-```
-
-### 3. Use it
-
-Ask Claude a miRNA-target question in natural language, e.g.
-*"Which miRNAs regulate PTEN?"* or *"Which genes does miR-21 target to promote apoptosis in
-breast cancer?"* Claude builds the query, runs the retrieval core, and returns a ranked,
-evidence-grounded answer.
-
-The first query downloads the evidence snapshot (~106 MB) from the GitHub Release and
-caches it; subsequent queries are fast. Under the hood the skill calls a headless CLI you
-can also run directly:
+The first query downloads the evidence snapshot (~106 MB) and caches it; later queries are
+fast. Under the hood the skill runs a headless CLI you can also call directly:
 
 ```bash
 python mirassist-skill/scripts/retrieve.py \
@@ -203,42 +189,6 @@ python mirassist-skill/scripts/retrieve.py \
 See [`mirassist-skill/SKILL.md`](mirassist-skill/SKILL.md) for the full query grammar and
 [`mirassist-skill/reference/`](mirassist-skill/reference/) for the QuerySpec schema and
 output-column reference.
-
-### Publishing your own copy
-
-If you fork miRAssist, publish the evidence snapshot once so both the app and skill can
-fetch it:
-
-1. **Export the evidence table to parquet** with the bundled helper (guarantees the
-   learned-score and percentile columns retrieval needs):
-
-   ```bash
-   python mirassist-skill/scripts/export_snapshot.py --from-supabase \
-     --database-url "postgresql://USER:PASSWORD@HOST:5432/postgres" \
-     --out mirassist_evidence_pairs.parquet
-   ```
-
-   It prints `OK: all key retrieval columns are present` (or warns what's missing). To
-   convert an existing CSV instead, use `--from-csv path.csv`.
-
-2. **Attach the parquet to a public GitHub Release** of your fork.
-
-3. **Point both entry points at the asset URL:** set `evidence_parquet_url` in
-   [`mirassist-skill/scripts/skill_settings.json`](mirassist-skill/scripts/skill_settings.json)
-   (skill) and `DEFAULT_EVIDENCE_URL` in [`backend/config.py`](backend/config.py) — or the
-   `MIRASSIST_EVIDENCE_URL` env var — for the app.
-
-The snapshot is read-only public data — no keys required for end users. When the data
-changes, upload a new release and update the URL; caches re-download automatically.
-Retrieval reads only the rows for the queried miRNA/gene (parquet predicate pushdown), so
-the full table is never loaded into memory.
-
-> **Note on sandboxed environments.** GitHub *release-asset* downloads must be reachable
-> from wherever the code runs. If a locked-down environment blocks them, the tool returns a
-> clear "failed to download" error; alternatives are `EVIDENCE_BACKEND=parquet` +
-> `MIRASSIST_EVIDENCE=/local.parquet` (fully offline) or a live Supabase connection.
-
----
 
 ## Configuration reference
 
