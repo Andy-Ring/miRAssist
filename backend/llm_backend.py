@@ -157,7 +157,9 @@ def _chat_openai(
     message = choice.get("message") or {}
     content = message.get("content")
     if isinstance(content, str):
-        return content.strip()
+        text = content.strip()
+        print(f"[miRAssist] OpenAI message content extracted: {len(text)} chars", flush=True)
+        return text
     if isinstance(content, list):
         parts = []
         for item in content:
@@ -166,6 +168,7 @@ def _chat_openai(
                 parts.append(text)
         joined = "".join(parts).strip()
         if joined:
+            print(f"[miRAssist] OpenAI message content extracted: {len(joined)} chars", flush=True)
             return joined
 
     raise RuntimeError("OpenAI chat completion returned an empty message content.")

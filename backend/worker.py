@@ -114,7 +114,12 @@ def run_query_job(
         persist({"status": "running", "stage": "planner"})
         synthesis_disabled = get_disable_synthesis() if disable_synthesis is None else bool(disable_synthesis)
 
+        print("[miRAssist] worker starting planner", flush=True)
         qs = run_planner(question)
+        print(
+            f"[miRAssist] worker planner complete: mode={qs.get('mode')} mirna={qs.get('mirna')} gene={qs.get('gene')}",
+            flush=True,
+        )
         qs = _apply_query_overrides(
             queryspec=qs,
             k=k,
@@ -124,7 +129,9 @@ def run_query_job(
             require_expression=require_expression,
             pathway_mode=pathway_mode,
         )
+        print("[miRAssist] worker query overrides applied", flush=True)
         pathway_selection_internal = resolve_pathway_selection(qs)
+        print("[miRAssist] worker pathway selection resolved", flush=True)
         if qs.get("debug_warnings"):
             pathway_selection_internal.setdefault("warnings", [])
             for warning in qs["debug_warnings"]:
@@ -150,11 +157,13 @@ def run_query_job(
         if evidence_backend == "parquet":
             ev = load_evidence()
 
+        print(f"[miRAssist] worker starting retrieval via {evidence_backend}", flush=True)
         shortlist_df, direction, retrieval_diagnostics = retrieve_from_queryspec(
             ev,
             qs,
             pathway_selection=pathway_selection_internal,
         )
+        print(f"[miRAssist] worker retrieval complete: rows={len(shortlist_df)} direction={direction}", flush=True)
         retrieval_diagnostics["evidence_backend"] = evidence_backend
         if evidence_backend == "parquet":
             shortlist_df = annotate_feature_percentiles(shortlist_df, ev)
@@ -250,7 +259,9 @@ def run_query_job(
         from backend.synthesizer import run_synthesizer
 
         tcga = ((qs.get("cancer") or {}).get("tcga") or qs.get("tcga"))
+        print("[miRAssist] worker starting card generation", flush=True)
         cards, card_generation_diagnostics = cards_from_dataframe_with_diagnostics(synth_shortlist_df, tcga=tcga)
+        print(f"[miRAssist] worker card generation complete: cards={len(cards)}", flush=True)
         if len(synth_shortlist_df) > 0 and not cards:
             raise RuntimeError(
                 "Shortlist rows were produced, but card generation returned zero evidence cards. "
@@ -284,6 +295,7 @@ def run_query_job(
             },
             retrieval_diagnostics=retrieval_diagnostics,
         )
+        print("[miRAssist] worker prompt bundle built", flush=True)
         prompt_bundle_debug = {
             "candidate_order_sent_to_llm": (bundle.get("meta") or {}).get("candidate_order_sent_to_llm", []),
             "cards_count": (bundle.get("meta") or {}).get("cards_count", len(cards)),

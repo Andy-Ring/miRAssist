@@ -130,7 +130,7 @@ _PHENOTYPE_PATTERNS = [
     (re.compile(r"\b(energy metabolism|metabolism|metabolic reprogramming)\b", re.IGNORECASE), "energy metabolism"),
 ]
 _MIRNA_TEXT_RE = re.compile(r"\b(?:miR(?:NA)?s?|microRNAs?)\b", re.IGNORECASE)
-_MIRNA_TOKEN_RE = re.compile(r"\b(?:hsa[-_\s]*)?(?:miR|microRNA)[-_\s]*\d+[A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*(?:[-_](?:3p|5p))?\b", re.IGNORECASE)
+_MIRNA_TOKEN_RE = re.compile(r"\b(?:hsa[-_\s]*)?(?:miR(?:NA)?|microRNA)[-_\s]*\d+[A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*(?:[-_](?:3p|5p))?\b", re.IGNORECASE)
 _GENE_TO_MIRNA_PATTERNS = [
     re.compile(r"\bmiR(?:NA)?s?\b.*\b(?:regulat\w*|regult\w*|regulte|target\w*|bind\w*)\b", re.IGNORECASE),
     re.compile(r"\b(?:regulat\w*|regult\w*|regulte|target\w*|bind\w*)\b.*\b(?:by\s+)?miR(?:NA)?s?\b", re.IGNORECASE),
@@ -511,6 +511,78 @@ def _json_from_text(text: str) -> Dict[str, Any]:
     return json.loads(s)
 
 
+def _new_queryspec(question: str) -> Dict[str, Any]:
+    return {
+        "original_question": question,
+        "mode": "mirna_to_targets",
+        "mirna": None,
+        "gene": None,
+        "cancer": {"name": None, "tcga": None},
+        "phenotype_context": {
+            "phenotype": None,
+            "observed_change": None,
+            "miRNA_perturbation": None,
+            "raw_phrase": None,
+            "direction": None,
+        },
+        "target_role_inference": {
+            "enabled": False,
+            "assumption": "miRNAs usually repress target gene expression",
+            "expected_target_effect_on_phenotype": "unknown",
+            "reasoning": "",
+        },
+        "pathway_selection_request": {
+            "enabled": False,
+            "query_terms": [],
+            "directional_query_terms": [],
+            "strict": False,
+        },
+        "phenotype_keywords": [],
+        "pathway_keywords": [],
+        "pathway_filter": {"enabled": False, "mode": "filter", "min_gene_sets": 1},
+        "novel": False,
+        "k": get_default_k(),
+        "result_count": None,
+        "filters": {
+            "min_support": 1,
+            "require_binding_evidence": False,
+            "require_expression": False,
+        },
+        "needs_clarification": [],
+    }
+
+
+def _build_rule_based_queryspec(question: str) -> Optional[Dict[str, Any]]:
+    """
+    Handle direct entity lookup prompts without an LLM planner call.
+
+    Posit Connect has shown a native segfault immediately after the planner LLM
+    call completes. These common query shapes do not need generative planning:
+    the database retrieval layer can answer them once the entity/direction is
+    known.
+    """
+    text = str(question or "").strip()
+    if not text:
+        return None
+
+    mirna_match = _MIRNA_TOKEN_RE.search(text)
+    if mirna_match:
+        qs = _new_queryspec(text)
+        qs["mode"] = "mirna_to_targets"
+        qs["mirna"] = mirna_match.group(0)
+        return qs
+
+    if _looks_like_gene_to_mirnas_question(text):
+        gene = _extract_likely_gene_symbol(text)
+        if gene:
+            qs = _new_queryspec(text)
+            qs["mode"] = "gene_to_mirnas"
+            qs["gene"] = gene
+            return qs
+
+    return None
+
+
 def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
     """
     Enforce schema completeness and sensible defaults.
@@ -655,12 +727,18 @@ def run_planner(question: str) -> Dict[str, Any]:
     """
     Main planner entrypoint for the direct Streamlit app.
     """
-    from backend.llm_backend import chat
-
     question = (question or "").strip()
     if not question:
         raise ValueError("Question is empty.")
 
+    rule_based_qs = _build_rule_based_queryspec(question)
+    if rule_based_qs is not None:
+        print("[miRAssist] planner using deterministic entity parser", flush=True)
+        return _validate_and_fill(rule_based_qs, question)
+
+    from backend.llm_backend import chat
+
+    print("[miRAssist] planner starting LLM call", flush=True)
     response = chat(
         system=PLANNER_SYSTEM_PROMPT,
         user=f"User question:\n{question}\n\nReturn JSON QuerySpec only.",
@@ -669,6 +747,10 @@ def run_planner(question: str) -> Dict[str, Any]:
         temperature=get_planner_temperature(),
         top_p=1.0,
     )
+    print(f"[miRAssist] planner received LLM text: {len(response)} chars", flush=True)
 
     qs = _json_from_text(response)
-    return _validate_and_fill(qs, question)
+    print("[miRAssist] planner parsed QuerySpec JSON", flush=True)
+    validated = _validate_and_fill(qs, question)
+    print("[miRAssist] planner validated QuerySpec", flush=True)
+    return validated
