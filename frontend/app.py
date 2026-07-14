@@ -6,6 +6,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import json
+import hashlib
 import os
 import time
 import traceback
@@ -86,7 +87,7 @@ _startup_log("sidebar context entered")
 
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.10.1"
+APP_VERSION = "0.10.2"
 APP_AUTHOR = "Andy Ring"
 DEFAULT_UI_CANDIDATE_POOL = 10
 DEFAULT_UI_MIN_SUPPORT = 2
@@ -364,6 +365,22 @@ def typewriter_markdown(md: str, container, cps: int = 60, chunk: str = "word"):
             time.sleep(delay)
 
 
+def render_answer_markdown(md: str, query_id: str | None) -> None:
+    if not md:
+        return
+
+    digest = hashlib.sha1(md.encode("utf-8")).hexdigest()[:12]
+    animation_key = f"{query_id or 'latest'}:{digest}"
+    if st.session_state.get("last_typewriter_animation_key") == animation_key:
+        st.markdown(md, unsafe_allow_html=False)
+        return
+
+    answer_box = st.empty()
+    typewriter_markdown(md, answer_box, cps=120, chunk="word")
+    answer_box.markdown(md, unsafe_allow_html=False)
+    st.session_state["last_typewriter_animation_key"] = animation_key
+
+
 def dataframe_to_markdown_table(df: pd.DataFrame, max_rows: int = 20) -> str:
     if df is None or df.empty:
         return ""
@@ -613,7 +630,7 @@ if result:
 
         summary_md = pick_summary_markdown(result)
         if summary_md:
-            st.markdown(summary_md, unsafe_allow_html=False)
+            render_answer_markdown(summary_md, str(query_id or ""))
         else:
             st.info("No summary text found in backend response.")
 
@@ -623,22 +640,24 @@ if result:
             for exp in experiments:
                 st.markdown(f"- {exp}")
 
-        st.markdown("## Evidence shortlist")
-        if not shortlist_df.empty:
-            st.caption(
-                f"Retrieved candidates shown in backend order. Direction: `{normalize_direction_label(resolved_direction)}`."
-            )
-            st.markdown(dataframe_to_markdown_table(shortlist_df), unsafe_allow_html=False)
-            if len(shortlist_df) > 20:
-                st.caption(f"Showing the first 20 of {len(shortlist_df)} rows. Download the CSV for the full shortlist.")
-            st.download_button(
-                label="Download evidence shortlist as CSV",
-                data=evidence_shortlist_csv_bytes(shortlist_df),
-                file_name=evidence_shortlist_filename(query_id),
-                mime="text/csv",
-            )
-        else:
-            st.info("Shortlist is empty.")
+        with st.expander("Evidence shortlist", expanded=False):
+            if not shortlist_df.empty:
+                st.caption(
+                    f"Retrieved candidates shown in backend order. Direction: `{normalize_direction_label(resolved_direction)}`."
+                )
+                st.markdown(dataframe_to_markdown_table(shortlist_df), unsafe_allow_html=False)
+                if len(shortlist_df) > 20:
+                    st.caption(
+                        f"Showing the first 20 of {len(shortlist_df)} rows. Download the CSV for the full shortlist."
+                    )
+                st.download_button(
+                    label="Download evidence shortlist as CSV",
+                    data=evidence_shortlist_csv_bytes(shortlist_df),
+                    file_name=evidence_shortlist_filename(query_id),
+                    mime="text/csv",
+                )
+            else:
+                st.info("Shortlist is empty.")
 
         with st.expander("Planner output (QuerySpec)", expanded=False):
             queryspec = extract_queryspec(result)
