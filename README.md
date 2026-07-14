@@ -1,8 +1,8 @@
 <div align="center">
 
-# miRAssist
+<img src="frontend/assets/miRAssist_logo.png" alt="miRAssist" width="440">
 
-**Directed, evidence-grounded miRNA–target interaction predictions.**
+### Directed, evidence-grounded miRNA–target interaction predictions
 
 miRAssist ranks candidate microRNA–mRNA (miRNA–target) interactions with a learned
 XGBoost model on top of a curated, multi-source evidence database, and explains each
