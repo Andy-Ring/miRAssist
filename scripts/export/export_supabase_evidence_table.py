@@ -536,6 +536,7 @@ def main() -> None:
 
     parquet_out = output_dir / "mirassist_supabase_evidence.parquet"
     csv_out = output_dir / "mirassist_supabase_evidence.csv.gz"
+    release_csv_out = output_dir / "mirassist_evidence_pairs.csv.gz"
     schema_out = output_dir / "mirassist_supabase_evidence_schema.csv"
     report_out = output_dir / "mirassist_supabase_evidence_export_report.txt"
 
@@ -655,6 +656,7 @@ def main() -> None:
     schema_df = _build_schema(export_df)
     export_df.to_parquet(parquet_out, index=False)
     export_df.to_csv(csv_out, index=False, compression="gzip")
+    export_df.to_csv(release_csv_out, index=False, compression="gzip")
     schema_df.to_csv(schema_out, index=False)
 
     score_values = pd.to_numeric(export_df["mirassist_xgboost_score"], errors="coerce")
@@ -664,6 +666,7 @@ def main() -> None:
         f"input_path: {input_path}",
         f"parquet_output: {parquet_out}",
         f"csv_output: {csv_out}",
+        f"release_csv_output: {release_csv_out}",
         f"schema_output: {schema_out}",
         f"input_shape: {df.shape}",
         f"output_shape: {export_df.shape}",
@@ -728,6 +731,7 @@ def main() -> None:
     )
     print(f"Wrote parquet: {parquet_out}")
     print(f"Wrote csv.gz: {csv_out}")
+    print(f"Wrote release csv.gz: {release_csv_out}")
     print(f"Wrote schema: {schema_out}")
     print(f"Wrote report: {report_out}")
 

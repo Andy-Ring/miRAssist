@@ -79,8 +79,8 @@ The two deployments differ only in *who plays the planner and synthesis layer*:
 
 | | Planner & synthesizer | Evidence source |
 |---|---|---|
-| **Streamlit app** | OpenAI-hosted models | GitHub-hosted parquet snapshot (Supabase no longer required) |
-| **Claude skill** | Claude itself (no OpenAI key) | GitHub-hosted parquet snapshot, cached locally |
+| **Streamlit app** | OpenAI-hosted models | GitHub-hosted CSV snapshot (Supabase no longer required) |
+| **Claude skill** | Claude itself (no OpenAI key) | GitHub-hosted CSV snapshot, cached locally |
 
 Both read the same evidence snapshot published on GitHub Releases, so **neither requires a
 live database**. (Live Supabase Postgres/REST remains available as an option — see the
@@ -151,8 +151,8 @@ Then run:
 streamlit run app.py
 ```
 
-`mirassist_evidence_pairs.parquet` can be downloaded from the most recent GitHub release and stored at data/processed. If the file isn't present, the app instead
-downloads the snapshot (~106 MB) from the GitHub Release and caches it under
+`mirassist_evidence_pairs.csv.gz` can be downloaded from the most recent GitHub release and stored at data/processed. If the file isn't present, the app instead
+downloads the snapshot from the GitHub Release and caches it under
 `~/.cache/mirassist`.
 
 ---
@@ -196,7 +196,7 @@ output-column reference.
 | Variable | Purpose | Typical value |
 |---|---|---|
 | `EVIDENCE_BACKEND` | Evidence source | `github` (default) / `parquet` (offline) / `postgres` / `rest` |
-| `MIRASSIST_EVIDENCE_URL` | Snapshot URL (github mode) | `https://github.com/Andy-Ring/miRAssist/releases/download/v0.0.1/mirassist_evidence_pairs.parquet` |
+| `MIRASSIST_EVIDENCE_URL` | Snapshot URL (github mode) | `https://github.com/Andy-Ring/miRAssist/releases/download/v0.0.1/mirassist_evidence_pairs.csv.gz` |
 | `MIRASSIST_CACHE_DIR` | Snapshot cache dir | `~/.cache/mirassist` |
 | `MIRASSIST_EVIDENCE` | Local parquet path (offline mode) | `/path/to/evidence.parquet` |
 | `JOBSTORE_BACKEND` | Job persistence (app) | `filesystem` / `postgres` |

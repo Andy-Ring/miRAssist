@@ -61,7 +61,7 @@ _load_local_dotenv()
 
 
 # ---------------------------------------------------------------------------
-# Evidence snapshot settings (GitHub-hosted parquet; Supabase no longer required)
+# Evidence snapshot settings (GitHub-hosted CSV snapshot; Supabase no longer required)
 # ---------------------------------------------------------------------------
 import json as _json
 
@@ -69,7 +69,7 @@ _SKILL_SETTINGS_CACHE: dict | None = None
 
 DEFAULT_EVIDENCE_URL = (
     "https://github.com/Andy-Ring/miRAssist/releases/download/"
-    "v0.0.1/mirassist_evidence_pairs.parquet"
+    "v0.0.1/mirassist_evidence_pairs.csv.gz"
 )
 
 
@@ -106,6 +106,12 @@ def get_evidence_parquet_url() -> str | None:
     url = _setting("MIRASSIST_EVIDENCE_URL", "evidence_parquet_url", DEFAULT_EVIDENCE_URL)
     if url and any(token in str(url) for token in ("YOUR_GITHUB_USER", "<you>", "PASTE_YOUR")):
         return DEFAULT_EVIDENCE_URL
+    if (
+        url
+        and str(url).split("?", 1)[0].lower().endswith(".parquet")
+        and not _env_flag("MIRASSIST_ALLOW_PARQUET_SNAPSHOT", default="0")
+    ):
+        return str(url).rsplit(".parquet", 1)[0] + ".csv.gz"
     return url
 
 
@@ -135,7 +141,7 @@ def get_jobstore_backend() -> str:
 
 
 def get_evidence_backend() -> str:
-    # miRAssist reads evidence from a GitHub-hosted parquet snapshot by default, so
+    # miRAssist reads evidence from a GitHub-hosted CSV snapshot by default, so
     # neither the app nor the skill requires Supabase. Explicit values still work:
     # parquet (local file), postgres/rest (live Supabase) remain available.
     requested = (os.getenv("EVIDENCE_BACKEND", "") or "").strip().lower()

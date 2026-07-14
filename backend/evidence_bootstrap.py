@@ -45,7 +45,8 @@ def _cache_dir() -> Path:
 def _cache_path_for(url: str) -> Path:
     # Version the cache by URL so bumping the release tag re-downloads cleanly.
     digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
-    suffix = ".csv" if url.split("?", 1)[0].lower().endswith(".csv") else ".parquet"
+    lower_url = url.split("?", 1)[0].lower()
+    suffix = ".csv.gz" if lower_url.endswith(".csv.gz") else (".csv" if lower_url.endswith(".csv") else ".parquet")
     return _cache_dir() / f"evidence_{digest}{suffix}"
 
 
@@ -78,7 +79,7 @@ def _download(url: str, dest: Path) -> None:
 
 
 def ensure_evidence_parquet() -> str:
-    """Return a local path to the evidence parquet, downloading + caching if needed.
+    """Return a local path to the evidence snapshot, downloading + caching if needed.
 
     Resolution order:
       1) MIRASSIST_EVIDENCE env pointing at an existing file (offline / dev override).

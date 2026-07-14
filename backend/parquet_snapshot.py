@@ -25,6 +25,11 @@ _DATASET_CACHE: Dict[str, Any] = {}
 _PANDAS_SNAPSHOT_CACHE: Dict[str, pd.DataFrame] = {}
 
 
+def _is_csv_snapshot(path: str) -> bool:
+    lower = str(path).split("?", 1)[0].lower()
+    return lower.endswith(".csv") or lower.endswith(".csv.gz")
+
+
 def _snapshot_reader() -> str:
     import os
 
@@ -35,7 +40,7 @@ def _dataset(path: str) -> Any:
     import pyarrow.dataset as pds
 
     if path not in _DATASET_CACHE:
-        if path.split("?", 1)[0].lower().endswith(".csv"):
+        if _is_csv_snapshot(path):
             from pyarrow.csv import ParseOptions
 
             fmt = pds.CsvFileFormat(parse_options=ParseOptions(newlines_in_values=True))
@@ -99,7 +104,8 @@ def _base_filters(cfg: "Any", available: set) -> Optional[Any]:
 
 
 def _read_snapshot_columns(path: str) -> List[str]:
-    if path.split("?", 1)[0].lower().endswith(".csv"):
+    if _is_csv_snapshot(path):
+        print("[miRAssist] snapshot reading CSV header", flush=True)
         return list(pd.read_csv(path, nrows=0).columns)
 
     print("[miRAssist] snapshot reading parquet metadata", flush=True)
@@ -115,8 +121,10 @@ def _read_snapshot_frame(path: str, columns: List[str]) -> pd.DataFrame:
     if cache_key in _PANDAS_SNAPSHOT_CACHE:
         return _PANDAS_SNAPSHOT_CACHE[cache_key].copy()
 
-    if path.split("?", 1)[0].lower().endswith(".csv"):
+    if _is_csv_snapshot(path):
+        print(f"[miRAssist] snapshot pandas read_csv starting: columns={len(columns)}", flush=True)
         df = pd.read_csv(path, usecols=columns)
+        print(f"[miRAssist] snapshot pandas read_csv complete: rows={len(df)}", flush=True)
     else:
         print(f"[miRAssist] snapshot pandas read_parquet starting: columns={len(columns)}", flush=True)
         df = pd.read_parquet(path, columns=columns)
