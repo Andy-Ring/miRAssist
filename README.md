@@ -2,11 +2,12 @@
 
 <img src="frontend/assets/miRAssist_logo.png" alt="miRAssist" width="440">
 
-### Directed, evidence-grounded miRNA–target interaction predictions
+### A context-aware, evidence-integration framework for interpretable miRNA–target prioritization
 
-miRAssist ranks candidate microRNA–mRNA (miRNA–target) interactions with a learned
-XGBoost model on top of a curated, multi-source evidence database, and explains each
-result in plain language.
+miRAssist prioritizes candidate microRNA–target interactions (MTIs) by integrating six
+families of experimental and computational evidence, ranking them with a backend XGBoost
+model, and interpreting the results through a large language model (LLM) planner and
+synthesis layer — so each ranked candidate comes with the evidence behind it.
 
 **▶ Try it now (no install):** hosted web app on Posit Connect Cloud →
 **https://andy-ring-mirassist.share.connect.posit.cloud/**
@@ -21,7 +22,7 @@ Or install it as a **Claude skill** and ask in natural language from inside Clau
 
 - [What it is](#what-it-is)
 - [How it works](#how-it-works)
-- [Evidence sources](#evidence-sources)
+- [Evidence families](#evidence-families)
 - [Option A — Streamlit web app](#option-a--streamlit-web-app)
 - [Option B — Claude skill](#option-b--claude-skill)
 - [Configuration reference](#configuration-reference)
@@ -32,37 +33,49 @@ Or install it as a **Claude skill** and ask in natural language from inside Clau
 
 ## What it is
 
-miRAssist answers two core questions:
+Many MTI prediction tools return a score or ranked list without making the supporting
+evidence easy to interpret, which makes it hard to tell *why* a target was prioritized or
+whether the evidence is relevant to a specific biological question. miRAssist addresses
+this: it ranks candidate MTIs *and* explains the evidence supporting each one, in the
+biological context the user cares about.
+
+It answers two core questions:
 
 - **miRNA → targets:** *"Which genes does miR-21 target in breast cancer?"*
 - **gene → miRNAs:** *"Which miRNAs regulate PTEN?"*
 
-For each query it retrieves candidate interactions from an evidence database, ranks them
-with a learned XGBoost model (with a transparent fallback to a manual composite score),
-and returns a short, grounded explanation of *why* each candidate ranks where it does.
-Queries can be filtered by cancer type (TCGA cohort) and by phenotype/pathway context
-such as apoptosis, proliferation, EMT, invasion, or migration.
+Under the hood, a transcript-level candidate database integrates six evidence families
+across 577,118 potential MTIs. A backend XGBoost model — trained to prioritize interactions
+resembling experimentally confirmed positives from miRTarBase — ranks the candidates, and
+outperforms individual external prediction tools (TargetScan, miRDB, DIANA-microT, miRanda,
+RNA22) at recovering held-out miRTarBase positives (AUROC 0.835 on the test set). A large
+language model (LLM) planner and synthesis layer then lets users ask natural-language
+questions and receive ranked candidates with evidence-grounded explanations, including
+context-aware filtering by biological pathway (MSigDB) and cancer type (TCGA).
 
 Every reported score, percentile, and pathway membership comes from the database — the
 language layer is instructed never to invent numbers or gene–phenotype relationships.
 
 ## How it works
 
-```
-Question ─► Planner ─► Retrieval ─► XGBoost ranking ─► Synthesizer ─► Grounded answer
-                       (evidence DB)  (learned score)
-```
+<div align="center">
 
-1. **Planner** converts a natural-language question into a structured `QuerySpec`
-   (entity, direction, cancer, phenotype/pathway intent, filters).
-2. **Retrieval** pulls a bounded candidate pool for the queried miRNA/gene, normalizes
-   miRNA names and mature arms, and applies grounded pathway filtering.
-3. **Ranking** orders candidates by the precomputed learned XGBoost score
-   (`learned_score_xgb_raw_v1`), falling back to the manual `retrieval_score` per row when
-   the learned score is missing.
-4. **Synthesizer** writes the explanation using only backend-computed values and labels.
+<img src="frontend/assets/Figure5.png" alt="miRAssist framework overview" width="760">
 
-The two deployments differ only in *who plays the planner/synthesizer*:
+</div>
+
+1. **Planner** — an LLM converts a natural-language question into a structured database
+   query (entity, direction, cancer context, pathway/phenotype intent, filters).
+2. **Retrieval & ranking** — miRAssist pulls candidate MTIs for the query and ranks them by
+   the backend XGBoost score (with a transparent fallback to a manual composite score when
+   a learned score is unavailable).
+3. **Context-aware filtering** — when a question names a pathway, the search is restricted
+   to genes in matching MSigDB gene sets; when it names a cancer type, functional-repression
+   evidence is filtered to that TCGA cohort (BRCA, COAD, PRAD).
+4. **Synthesis** — an LLM writes an evidence-grounded explanation using only backend-computed
+   values and labels.
+
+The two deployments differ only in *who plays the planner and synthesis layer*:
 
 | | Planner & synthesizer | Evidence source |
 |---|---|---|
@@ -73,19 +86,22 @@ Both read the same evidence snapshot published on GitHub Releases, so **neither 
 live database**. (Live Supabase Postgres/REST remains available as an option — see the
 configuration reference.)
 
-## Evidence sources
+## Evidence families
 
-Each candidate integrates, where available:
+miRAssist integrates six families of evidence spanning sequence, structure, and functional
+measurements:
 
-| Evidence family | Source | Signal |
+| Evidence family | Source | Captures |
 |---|---|---|
-| Curated functional support | miRTarBase | validated interactions |
-| Computational prediction | TargetScan, miRDB | seed/context prediction |
-| Binding | CLIP / ENCORI | crosslinking support |
-| Site architecture | seed / site type | 6mer → 8mer canonical sites |
-| Thermodynamics | RNAhybrid, MFE | duplex stability |
-| Accessibility | RNAplfold | target-site openness |
-| Context repression | TCGA (BRCA, COAD, PRAD) | expression anticorrelation |
+| Sequence complementarity | miRNA & mRNA 3′UTR sequences | 8mer / 7mer-m8 / 7mer-A1 / 6mer seed matches |
+| Sequence conservation | TargetScan | cross-species conservation of target sites |
+| Thermodynamic stability | RNAhybrid | free energy of the miRNA–mRNA duplex |
+| Target-site accessibility | RNAplfold | local unpaired probability of the target site |
+| Functional binding | CLIP-seq (ENCORI) | measured miRNA–mRNA binding |
+| Functional repression | TCGA (BRCA, COAD, PRAD) | miRNA–mRNA expression anticorrelation |
+
+Experimentally confirmed interactions from **miRTarBase** are held out as ground-truth
+labels for evaluation and are excluded from the model's input features.
 
 Feature percentiles are computed against the full database and reported with fixed labels
 (`≥95` exceptional, `≥90` very high, `≥75` high, `≥50` above average, `≥25` typical,
@@ -262,6 +278,13 @@ miRAssist/
 
 ## Citation & license
 
-Released under the [MIT License](LICENSE) © 2026 Andrew Ring.
+If you use miRAssist in your research, please cite:
 
-If you use miRAssist in your research, please cite this repository.
+> Ring A, Xi Y. *miRAssist: a context-aware, evidence-integration framework for
+> interpretable miRNA-target prioritization.*
+
+- **Database:** Zenodo — https://doi.org/10.5281/zenodo.21072247
+- **Code:** https://github.com/Andy-Ring/miRAssist
+- **App:** https://andy-ring-mirassist.share.connect.posit.cloud/
+
+Released under the [MIT License](LICENSE) © 2026 Andrew Ring.
