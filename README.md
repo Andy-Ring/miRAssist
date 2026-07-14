@@ -120,7 +120,7 @@ The app is live on Posit Connect Cloud — just open it and start asking questio
 
 **https://andy-ring-mirassist.share.connect.posit.cloud/**
 
-### Run it yourself
+### Run it locally
 
 The app needs only an OpenAI key — evidence is pulled from the GitHub snapshot and jobs are
 stored on the local filesystem, so **no database is required**.
@@ -151,15 +151,16 @@ Then run:
 streamlit run app.py
 ```
 
-On first query the app downloads the evidence snapshot (~106 MB) and caches it under
-`~/.cache/mirassist`; later queries reuse the cache.
+'mirassist_evidence_pairs.parquet` can be downloaded from the most recent GitHub release and stored at data/processed. If the file isn't present, the app instead
+downloads the snapshot (~106 MB) from the GitHub Release and caches it under
+`~/.cache/mirassist`.
 
 ---
 
 ## Option B — Claude skill
 
 The Claude skill wraps the same deterministic retrieval + XGBoost ranking core, but Claude
-plays the planner and synthesizer roles. **no API keys are required**. On first use it downloads a one-time evidence snapshot from this repo's GitHub
+plays the planner and synthesizer roles. **No API keys are required**. On first use it downloads a one-time evidence snapshot from this repo's GitHub
 Releases and caches it locally, so **end users configure nothing**. Skill assets live in
 [`mirassist-skill/`](mirassist-skill/), with a pre-packaged installer at `mirassist.skill`.
 
@@ -173,7 +174,7 @@ Releases and caches it locally, so **end users configure nothing**. Skill assets
    *"Which miRNAs regulate PTEN?"* or *"Which genes does miR-21 target to promote apoptosis
    in breast cancer?"*
 
-New to Claude skills? A step-by-step, no-jargon walkthrough is in
+New to Claude skills? A step-by-step walkthrough is in
 [**INSTALL_SKILL.md**](INSTALL_SKILL.md).
 
 The first query downloads the evidence snapshot (~106 MB) and caches it; later queries are
@@ -204,7 +205,6 @@ output-column reference.
 | `MIRASSIST_DEFAULT_RESULT_COUNT` | Ranked results shown | `5` |
 | `OPENAI_API_KEY` | OpenAI key (app only) | `sk-...` |
 | `MIRASSIST_PLANNER_MODEL` / `MIRASSIST_SYNTH_MODEL` | LLM models (app only) | `gpt-5.4-nano` / `gpt-5.4-mini` |
-| `DATABASE_URL` | Live Supabase Postgres (optional/legacy) | `postgresql://…pooler.supabase.com:6543/postgres` |
 
 ---
 
@@ -233,7 +233,6 @@ If you use miRAssist in your research, please cite:
 > Ring A, Xi Y. *miRAssist: a context-aware, evidence-integration framework for
 > interpretable miRNA-target prioritization.*
 
-- **Database:** Zenodo — https://doi.org/10.5281/zenodo.21072247
 - **Code:** https://github.com/Andy-Ring/miRAssist
 - **App:** https://andy-ring-mirassist.share.connect.posit.cloud/
 
