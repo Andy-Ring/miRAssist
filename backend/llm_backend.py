@@ -1,4 +1,7 @@
+import json
 from typing import Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import requests
 
@@ -114,26 +117,35 @@ def _chat_openai(
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
+        "Accept": "application/json",
+        # Avoid hosted-runtime native gzip/decompression paths after HTTP 200.
+        "Accept-Encoding": "identity",
     }
 
-    print("[miRAssist] OpenAI request starting via requests", flush=True)
+    print("[miRAssist] OpenAI request starting via urllib", flush=True)
     try:
-        response = requests.post(
+        request = Request(
             endpoint,
+            data=json.dumps(payload).encode("utf-8"),
             headers=headers,
-            json=payload,
-            timeout=float(get_openai_timeout()),
+            method="POST",
         )
+        with urlopen(request, timeout=float(get_openai_timeout())) as response:
+            status_code = int(response.status)
+            print(f"[miRAssist] OpenAI request finished with status {status_code}", flush=True)
+            raw_body = response.read()
+    except HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+        raise RuntimeError(f"OpenAI chat completion failed: HTTP {exc.code}: {body[:1000]}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"OpenAI chat completion failed: {exc}") from exc
     except Exception as exc:
         raise RuntimeError(f"OpenAI chat completion failed: {exc}") from exc
-    print(f"[miRAssist] OpenAI request finished with status {response.status_code}", flush=True)
-    try:
-        response.raise_for_status()
-    except Exception as exc:
-        raise RuntimeError(f"OpenAI chat completion failed: {response.text[:1000]}") from exc
 
     try:
-        completion = response.json()
+        print(f"[miRAssist] OpenAI response body read: {len(raw_body)} bytes", flush=True)
+        completion = json.loads(raw_body.decode("utf-8"))
+        print("[miRAssist] OpenAI response JSON parsed", flush=True)
     except Exception as exc:
         raise RuntimeError(f"OpenAI chat completion returned invalid JSON: {exc}") from exc
 
