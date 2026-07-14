@@ -14,7 +14,6 @@ import pandas as pd
 import streamlit as st
 
 from backend.config import (
-    get_debug_max_rows,
     get_debug_ui,
 )
 from frontend.evidence_table import (
@@ -86,7 +85,7 @@ _startup_log("sidebar context entered")
 
 
 APP_NAME = "miRAssist"
-APP_VERSION = "0.10.0"
+APP_VERSION = "0.10.1"
 APP_AUTHOR = "Andy Ring"
 DEFAULT_UI_CANDIDATE_POOL = 10
 DEFAULT_UI_MIN_SUPPORT = 2
@@ -472,7 +471,7 @@ def run_direct_mode(submit_payload: dict) -> None:
             k=submit_payload["k"],
             min_support=submit_payload["min_support"],
             novel=submit_payload["novel"],
-            disable_synthesis=submit_payload["disable_synthesis"],
+            disable_synthesis=False,
             require_binding_evidence=submit_payload["require_binding_evidence"],
             require_expression=submit_payload["require_expression"],
             pathway_mode="auto",
@@ -524,17 +523,6 @@ st.caption(
 
 c1 = st.columns(1)[0]
 with c1:
-    response_mode = st.radio(
-        "Response mode",
-        options=["Database chart only", "Answer synthesis"],
-        index=0,
-        horizontal=True,
-        help=(
-            "Choose database chart only for fast ranked candidates, or answer synthesis "
-            "to ask the configured LLM backend to write a summary from the evidence cards."
-        ),
-    )
-
     novel = st.checkbox(
         "Novel mode",
         value=False,
@@ -557,7 +545,6 @@ if run:
             "novel": bool(novel),
             "k": DEFAULT_UI_CANDIDATE_POOL,
             "min_support": DEFAULT_UI_MIN_SUPPORT,
-            "disable_synthesis": response_mode == "Database chart only",
             "require_binding_evidence": False,
             "require_expression": False,
             "pathway_mode": "auto",
@@ -596,38 +583,29 @@ if result:
         )
         query_id = st.session_state.get("last_query_id") or result.get("query_id")
         shortlist_df = build_evidence_shortlist_table(shortlist, resolved_direction)
-        synthesis_disabled = bool(result.get("disable_synthesis"))
 
-        if synthesis_disabled:
-            st.markdown("## Retrieved candidates")
-            st.caption("Answer synthesis is disabled; miRAssist is returning database-ranked candidates only.")
-            render_shortlist_chart(shortlist)
-            summary_md = pick_summary_markdown(result)
-            if summary_md and not shortlist:
-                st.info(summary_md)
-        else:
-            st.markdown("## Answer")
+        st.markdown("## Answer")
 
-            summary_md = pick_summary_markdown(result)
-            if summary_md:
-                placeholder = st.empty()
-                if st.session_state.get("animate_answer", True):
-                    typewriter_markdown(
-                        summary_md,
-                        placeholder,
-                        cps=int(st.session_state.get("typing_speed", 80)),
-                        chunk=st.session_state.get("typing_mode", "word"),
-                    )
-                else:
-                    placeholder.markdown(summary_md, unsafe_allow_html=False)
+        summary_md = pick_summary_markdown(result)
+        if summary_md:
+            placeholder = st.empty()
+            if st.session_state.get("animate_answer", True):
+                typewriter_markdown(
+                    summary_md,
+                    placeholder,
+                    cps=int(st.session_state.get("typing_speed", 80)),
+                    chunk=st.session_state.get("typing_mode", "word"),
+                )
             else:
-                st.info("No summary text found in backend response.")
+                placeholder.markdown(summary_md, unsafe_allow_html=False)
+        else:
+            st.info("No summary text found in backend response.")
 
-            experiments = pick_suggested_experiments(result)
-            if experiments:
-                st.markdown("## Suggested experiments")
-                for exp in experiments:
-                    st.markdown(f"- {exp}")
+        experiments = pick_suggested_experiments(result)
+        if experiments:
+            st.markdown("## Suggested experiments")
+            for exp in experiments:
+                st.markdown(f"- {exp}")
 
         st.markdown("## Evidence shortlist")
         if not shortlist_df.empty:

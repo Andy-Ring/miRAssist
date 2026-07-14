@@ -54,8 +54,10 @@ def _starts_with_lower(col: str, prefix: str):
 
 def _base_filters(cfg: "Any", available: set) -> Optional["pc.Expression"]:
     exprs: List["pc.Expression"] = []
-    if cfg.novel and cfg.use_mirtarbase_evidence and "mirtarbase_pos" in available:
-        exprs.append(pc.is_null(pc.field("mirtarbase_pos")) | pc.equal(pc.field("mirtarbase_pos"), 0))
+    if cfg.novel and cfg.use_mirtarbase_evidence:
+        for col in ("mirtarbase_pos", "label_mirtarbase"):
+            if col in available:
+                exprs.append(pc.is_null(pc.field(col)) | pc.equal(pc.field(col), 0))
     if cfg.require_binding_evidence:
         bind = [c for c in ("support_targetscan", "support_encori", "support_mirdb") if c in available]
         if bind:

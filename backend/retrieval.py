@@ -400,8 +400,10 @@ def build_postgres_candidate_query(
     params: Dict[str, Any] = {"candidate_limit": int(get_db_candidate_limit())}
     where_clauses: List[str] = []
 
-    if cfg.novel and cfg.use_mirtarbase_evidence and "mirtarbase_pos" in available:
-        where_clauses.append("COALESCE(" + quote_identifier("mirtarbase_pos") + ", 0) = 0")
+    if cfg.novel and cfg.use_mirtarbase_evidence:
+        novelty_cols = [col for col in ("mirtarbase_pos", "label_mirtarbase") if col in available]
+        for col in novelty_cols:
+            where_clauses.append("COALESCE(" + quote_identifier(col) + ", 0) = 0")
 
     if cfg.require_binding_evidence:
         binding_cols = [col for col in ("support_targetscan", "support_encori", "support_mirdb") if col in available]
@@ -1726,8 +1728,13 @@ def retrieve_candidates(
         return df.head(0), direction, diagnostics
 
     # --- Novel mode and optional soft gates after query narrowing ---
-    if cfg.novel and cfg.use_mirtarbase_evidence and "mirtarbase_pos" in df.columns:
-        df = df.loc[_bool_col(df, "mirtarbase_pos") == 0].copy()
+    if cfg.novel and cfg.use_mirtarbase_evidence:
+        novelty_cols = [col for col in ("mirtarbase_pos", "label_mirtarbase") if col in df.columns]
+        if novelty_cols:
+            novel_mask = pd.Series(True, index=df.index)
+            for col in novelty_cols:
+                novel_mask &= _bool_col(df, col) == 0
+            df = df.loc[novel_mask].copy()
     diagnostics["n_after_novel_filter"] = int(len(df))
 
     if cfg.require_binding_evidence:

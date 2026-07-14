@@ -148,8 +148,10 @@ def _build_query_params(
         params.append((str(gene_norm_col), f"eq.{_normalize_gene_symbol(query_token)}"))
 
     # novelty / gates
-    if cfg.novel and cfg.use_mirtarbase_evidence and "mirtarbase_pos" in available:
-        params.append(("or", "(mirtarbase_pos.is.null,mirtarbase_pos.eq.0)"))
+    if cfg.novel and cfg.use_mirtarbase_evidence:
+        for col in ("mirtarbase_pos", "label_mirtarbase"):
+            if col in available:
+                params.append(("or", f"({col}.is.null,{col}.eq.0)"))
     if cfg.require_binding_evidence:
         bind = [c for c in ("support_targetscan", "support_encori", "support_mirdb") if c in available]
         if bind:
