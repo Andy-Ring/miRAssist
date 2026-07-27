@@ -5,10 +5,13 @@ import json
 import traceback
 from typing import Any, Dict
 
+from backend.runtime_diagnostics import DebugStageStop, checkpoint, initialize_process, trace, traced
 from backend.config import get_debug_max_rows, get_default_k, get_disable_synthesis, get_evidence_backend
 
 
 SYNTHESIS_EVIDENCE_LIMIT = 25
+
+initialize_process()
 
 
 def _limit_debug_records(shortlist_df) -> list[dict]:
@@ -130,6 +133,7 @@ def run_query_job(
             pathway_mode=pathway_mode,
         )
         print("[miRAssist] worker query overrides applied", flush=True)
+        checkpoint("planner")
         pathway_selection_internal = resolve_pathway_selection(qs)
         print("[miRAssist] worker pathway selection resolved", flush=True)
         if qs.get("debug_warnings"):
@@ -164,6 +168,7 @@ def run_query_job(
             pathway_selection=pathway_selection_internal,
         )
         print(f"[miRAssist] worker retrieval complete: rows={len(shortlist_df)} direction={direction}", flush=True)
+        checkpoint("retrieval")
         retrieval_diagnostics["evidence_backend"] = evidence_backend
         if evidence_backend == "parquet":
             shortlist_df = annotate_feature_percentiles(shortlist_df, ev)
@@ -174,6 +179,8 @@ def run_query_job(
             )
 
         shortlist_records = _limit_debug_records(shortlist_df)
+        trace(f"ranking dataframe ready rows={len(shortlist_df)} columns={list(shortlist_df.columns)[:12]}")
+        checkpoint("ranking")
         synth_shortlist_df = shortlist_df.head(SYNTHESIS_EVIDENCE_LIMIT).copy()
         retrieval_diagnostics["debug_max_rows"] = int(get_debug_max_rows())
         retrieval_diagnostics["n_debug_rows_returned"] = int(len(shortlist_records))
@@ -260,6 +267,7 @@ def run_query_job(
 
         tcga = ((qs.get("cancer") or {}).get("tcga") or qs.get("tcga"))
         print("[miRAssist] worker starting card generation", flush=True)
+        trace(f"before card dataframe conversion rows={len(synth_shortlist_df)}")
         cards, card_generation_diagnostics = cards_from_dataframe_with_diagnostics(synth_shortlist_df, tcga=tcga)
         print(f"[miRAssist] worker card generation complete: cards={len(cards)}", flush=True)
         if len(synth_shortlist_df) > 0 and not cards:
@@ -282,6 +290,7 @@ def run_query_job(
         else:
             answer_obj = None
 
+        trace("before prompt bundle construction")
         bundle = build_prompt_bundle(
             queryspec=qs,
             shortlist=synth_shortlist_df,
@@ -296,6 +305,8 @@ def run_query_job(
             retrieval_diagnostics=retrieval_diagnostics,
         )
         print("[miRAssist] worker prompt bundle built", flush=True)
+        trace(f"prompt built system_chars={len(bundle.get('system_prompt', ''))} user_chars={len(bundle.get('user_prompt', ''))}")
+        checkpoint("prompt")
         prompt_bundle_debug = {
             "candidate_order_sent_to_llm": (bundle.get("meta") or {}).get("candidate_order_sent_to_llm", []),
             "cards_count": (bundle.get("meta") or {}).get("cards_count", len(cards)),
@@ -314,7 +325,9 @@ def run_query_job(
         )
 
         if answer_obj is None:
+            trace("before synthesizer LLM call")
             answer_obj = run_synthesizer(bundle)
+            trace("after synthesizer LLM call")
 
         final_payload = {
             "status": "done",
@@ -332,6 +345,10 @@ def run_query_job(
         }
         persist(final_payload)
         return final_payload
+    except DebugStageStop as exc:
+        payload = {"status": "debug_stopped", "stage": exc.stage, "query_id": query_id, "queryspec": locals().get("qs", {}), "message": str(exc)}
+        persist(payload)
+        return payload
     except Exception as exc:
         error_payload = {
             "status": "error",
@@ -344,6 +361,7 @@ def run_query_job(
 
 
 def main() -> None:
+    initialize_process()
     ap = argparse.ArgumentParser()
     ap.add_argument("--query_id", required=True)
     ap.add_argument("--question", required=True)

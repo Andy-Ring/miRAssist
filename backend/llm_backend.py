@@ -5,6 +5,8 @@ from urllib.request import Request, urlopen
 
 import requests
 
+from backend.runtime_diagnostics import trace
+
 from backend.config import (
     get_llm_backend,
     get_model_name,
@@ -28,12 +30,17 @@ def _chat_transformers(
     import torch  # type: ignore
 
     model_name = model or get_model_name()
+    trace(f"before transformer tokenizer load model={model_name}")
     tok = AutoTokenizer.from_pretrained(model_name, use_fast=True)
+    trace("after transformer tokenizer load")
+    trace(f"before transformer model load model={model_name}")
     model = AutoModelForCausalLM.from_pretrained(
         model_name,
         torch_dtype=torch.bfloat16,
         device_map="auto",
     )
+
+    trace("after transformer model load")
 
     prompt = (
         f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n"
@@ -44,6 +51,7 @@ def _chat_transformers(
     )
 
     inputs = tok(prompt, return_tensors="pt").to(model.device)
+    trace("before transformer model generation")
     with torch.no_grad():
         out = model.generate(
             **inputs,
@@ -52,6 +60,7 @@ def _chat_transformers(
             temperature=float(temperature),
             top_p=float(top_p),
         )
+    trace("after transformer model generation")
     text = tok.decode(out[0], skip_special_tokens=False)
     # naive strip: return after assistant header
     idx = text.rfind("<|start_header_id|>assistant<|end_header_id|>")
@@ -184,12 +193,19 @@ def chat(
     top_p: float = 0.95,
 ) -> str:
     backend = get_llm_backend()
+    trace(f"before LLM dispatch backend={backend} model={model or get_model_name()} system_chars={len(system)} user_chars={len(user)}")
     if backend == "transformers":
-        return _chat_transformers(system, user, model, max_new_tokens, temperature, top_p)
+        out = _chat_transformers(system, user, model, max_new_tokens, temperature, top_p)
+        trace(f"after LLM dispatch backend={backend} output_chars={len(out)}")
+        return out
     if backend == "vllm_http":
-        return _chat_vllm_http(system, user, model, max_new_tokens, temperature, top_p)
+        out = _chat_vllm_http(system, user, model, max_new_tokens, temperature, top_p)
+        trace(f"after LLM dispatch backend={backend} output_chars={len(out)}")
+        return out
     if backend == "openai":
-        return _chat_openai(system, user, model, max_new_tokens, temperature, top_p)
+        out = _chat_openai(system, user, model, max_new_tokens, temperature, top_p)
+        trace(f"after LLM dispatch backend={backend} output_chars={len(out)}")
+        return out
 
     raise ValueError(
         f"Unknown MIRASSIST_LLM_BACKEND='{backend}'. Expected 'transformers', 'vllm_http', or 'openai'."

@@ -2,6 +2,9 @@ from pathlib import Path
 import runpy
 import traceback
 
+from backend.runtime_diagnostics import initialize_process
+
+initialize_process()
 import streamlit as st
 
 print("[miRAssist] root app.py import started", flush=True)

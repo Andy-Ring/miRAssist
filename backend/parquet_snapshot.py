@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 
+from backend.runtime_diagnostics import trace
 from backend.config import get_db_candidate_limit, get_default_mirna_arm
 from backend.evidence_bootstrap import ensure_evidence_parquet
 
@@ -39,6 +40,7 @@ def _snapshot_reader() -> str:
 def _dataset(path: str) -> Any:
     import pyarrow.dataset as pds
 
+    trace(f"before pyarrow dataset open path={path}")
     if path not in _DATASET_CACHE:
         if _is_csv_snapshot(path):
             from pyarrow.csv import ParseOptions
@@ -47,6 +49,7 @@ def _dataset(path: str) -> Any:
         else:
             fmt = "parquet"
         _DATASET_CACHE[path] = pds.dataset(path, format=fmt)
+        trace(f"after pyarrow dataset open path={path} schema_cols={len(_DATASET_CACHE[path].schema.names)}")
     return _DATASET_CACHE[path]
 
 
@@ -109,11 +112,13 @@ def _read_snapshot_columns(path: str) -> List[str]:
         print("[miRAssist] snapshot reading CSV header", flush=True)
         return list(pd.read_csv(path, nrows=0).columns)
 
+    trace("before pyarrow parquet metadata read")
     print("[miRAssist] snapshot reading parquet metadata", flush=True)
     import pyarrow.parquet as pq
 
     columns = [str(name) for name in pq.ParquetFile(path).schema_arrow.names]
     print(f"[miRAssist] snapshot parquet metadata read: columns={len(columns)}", flush=True)
+    trace(f"after pyarrow parquet metadata read columns={len(columns)}")
     return columns
 
 
@@ -127,9 +132,11 @@ def _read_snapshot_frame(path: str, columns: List[str]) -> pd.DataFrame:
         df = pd.read_csv(path, usecols=columns)
         print(f"[miRAssist] snapshot pandas read_csv complete: rows={len(df)}", flush=True)
     else:
+        trace(f"before pandas read_parquet columns={len(columns)}")
         print(f"[miRAssist] snapshot pandas read_parquet starting: columns={len(columns)}", flush=True)
         df = pd.read_parquet(path, columns=columns)
         print(f"[miRAssist] snapshot pandas read_parquet complete: rows={len(df)}", flush=True)
+        trace(f"after pandas read_parquet rows={len(df)} cols={len(df.columns)}")
     _PANDAS_SNAPSHOT_CACHE[cache_key] = df
     return df.copy()
 

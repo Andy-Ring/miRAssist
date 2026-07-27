@@ -10,6 +10,8 @@ import re
 import numpy as np
 import pandas as pd
 
+from backend.runtime_diagnostics import trace, traced
+
 from backend.config import (
     get_db_candidate_limit,
     get_default_mirna_arm,
@@ -195,9 +197,10 @@ def _load_evidence_parquet(
     columns: list[str] | None = None,
 ) -> pd.DataFrame:
     resolved_path = str(resolve_evidence_path(evidence_path))
-    if columns:
-        return pd.read_parquet(resolved_path, columns=columns)
-    return pd.read_parquet(resolved_path)
+    with traced(f"pandas read_parquet path={resolved_path}"):
+        if columns:
+            return pd.read_parquet(resolved_path, columns=columns)
+        return pd.read_parquet(resolved_path)
 
 
 def _load_evidence_postgres(
@@ -688,6 +691,7 @@ def apply_learned_score_ranking(
     learned_score_column: str,
     enabled: bool,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    trace(f"before ranking learned_score_column={learned_score_column} enabled={enabled} rows={len(df)}; XGBoost scores are precomputed columns")
     ranked = df.copy()
     retrieval_score = _safe_float_col(ranked, "retrieval_score", default=0.0)
     support_tiebreak = _safe_float_col(ranked, "support_count", default=0.0)
@@ -735,6 +739,7 @@ def apply_learned_score_ranking(
             ],
             ascending=[False, False, False, False, False, False, False],
         )
+        trace(f"after manual ranking rows={len(ranked)}")
         return ranked, diagnostics
 
     selected_score_column = _resolve_score_column(ranked, learned_score_column)
@@ -759,6 +764,7 @@ def apply_learned_score_ranking(
         )
         return ranked, diagnostics
 
+    trace(f"before learned-score ranking column={selected_score_column} rows={len(ranked)}")
     learned_score_values = pd.to_numeric(ranked[selected_score_column], errors="coerce")
     learned_score_missing = learned_score_values.isna()
     score_column_used = pd.Series(

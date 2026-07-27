@@ -75,6 +75,11 @@ def main() -> int:
         "MIRASSIST_EVIDENCE",
         "MIRASSIST_EVIDENCE_PATH",
         "MIRASSIST_DEBUG_UI",
+        "MIRASSIST_DEBUG_STAGE",
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
     ]:
         value = _masked_env(name) if name in {"DATABASE_URL", "OPENAI_API_KEY"} else (os.getenv(name) or "<unset>")
         print(f"{name}={value}")
@@ -95,6 +100,9 @@ def main() -> int:
         "openai",
         "requests",
         "altair",
+        "xgboost",
+        "duckdb",
+        "sklearn",
     ]:
         _import_report(module_name)
     _print_streamlit_server_report()
