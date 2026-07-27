@@ -46,5 +46,17 @@ you only need to provide the keys you care about.
 - `filters.min_support` - minimum distinct evidence categories (raise to 2 for
   high-confidence). `require_binding_evidence`, `require_expression` - optional hard gates.
 
-Fields not listed here (target_role_inference, pathway_selection_request, pathway_filter,
-etc.) are computed automatically by the validator - you do not need to supply them.
+The validator computes `target_role_inference` automatically with these fields:
+
+```json
+{
+  "enabled": true,
+  "assumption": "Assumption based on typical miRNA-mediated repression: miRNAs usually repress their direct targets.",
+  "expected_target_expression_change": "increased | decreased | unknown",
+  "expected_target_effect_on_phenotype": "positive_regulator | negative_regulator | unknown",
+  "reasoning": "plain-language truth-table explanation",
+  "confidence": "moderate | low"
+}
+```
+
+Directional pathway terms are added alongside general phenotype terms. Explicit direction annotations rerank candidates by default; `pathway_selection_request.strict_directional` must be true to make them a hard filter. Other computed fields (`pathway_selection_request`, `pathway_filter`, etc.) do not need to be supplied.

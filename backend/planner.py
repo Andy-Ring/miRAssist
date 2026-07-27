@@ -39,14 +39,17 @@ REQUIRED SCHEMA (all keys must be present):
   "target_role_inference": {
     "enabled": boolean,
     "assumption": string,
+    "expected_target_expression_change": "increased" | "decreased" | "unknown",
     "expected_target_effect_on_phenotype": "positive_regulator" | "negative_regulator" | "unknown",
-    "reasoning": string
+    "reasoning": string,
+    "confidence": "moderate" | "low"
   },
   "pathway_selection_request": {
     "enabled": boolean,
     "query_terms": [string],
     "directional_query_terms": [string],
-    "strict": boolean
+    "strict": boolean,
+    "strict_directional": boolean
   },
   "phenotype_keywords": [string],
   "pathway_keywords": [string],
@@ -76,8 +79,9 @@ NOTES:
 - Extract separate fields for phenotype, observed phenotype change, and miRNA perturbation whenever possible.
 - Do not claim that the miRNA directly activates genes.
 - "target_role_inference" should apply only the default assumption that miRNAs usually repress direct targets.
-- For miRNA overexpression: increased/promoted phenotype implies likely target genes are negative regulators of that phenotype; decreased/suppressed phenotype implies likely target genes are positive regulators.
-- For knockdown/inhibition or unknown perturbation, use "unknown" unless the direction is truly clear from the question.
+- Under the usual repression assumption, increased miRNA implies decreased target expression, while decreased miRNA (including inhibitor, antagomir, knockdown, knockout, or depletion) implies increased target expression.
+- Combine target-expression direction with phenotype direction: decreased miRNA + increased phenotype => positive regulators; decreased miRNA + decreased phenotype => negative regulators; increased miRNA + increased phenotype => negative regulators; increased miRNA + decreased phenotype => positive regulators.
+- If either direction is unknown or contradictory, keep both inferred target fields unknown.
 - "pathway_selection_request.enabled" should be true if phenotype or pathway context is implied.
 - "pathway_selection_request.directional_query_terms" should include exact phrases like "positive regulation of apoptosis" or "negative regulation of apoptosis" when relevant.
 - "pathway_filter.enabled" should be true if phenotype or pathway context is implied, and if enabled its mode must always be "filter".
@@ -107,19 +111,34 @@ _OBSERVED_CHANGE_PATTERNS = [
     (re.compile(r"\b(promot(?:e|ed|es|ing))\b", re.IGNORECASE), "promoted"),
     (re.compile(r"\b(increase(?:d|s)?|enhance(?:d|s)?)\b", re.IGNORECASE), "increased"),
     (re.compile(r"\b(suppress(?:ed|es)?)\b", re.IGNORECASE), "suppressed"),
-    (re.compile(r"\b(decrease(?:d|s)?|reduc(?:ed|es|tion))\b", re.IGNORECASE), "decreased"),
+    (re.compile(r"\b(decrease(?:d|s)?|reduc(?:e|ed|es|tion)|inhibit(?:ed|s)?)\b", re.IGNORECASE), "decreased"),
+    (re.compile(r"\b(unchanged|no\s+(?:change|effect)|not\s+(?:changed|altered))\b", re.IGNORECASE), "unchanged"),
+    (re.compile(r"\b(unknown|unclear|not\s+(?:known|determined))\b", re.IGNORECASE), "unknown"),
     (re.compile(r"\bassociated with\b", re.IGNORECASE), "associated"),
 ]
 _PERTURBATION_PATTERNS = [
     (
         re.compile(
-            r"\b(overexpress(?:ed|ion)?|ectopic expression|forced expression|mimic transfection|miRNA mimic)\b",
+            r"\b(increas(?:e|ed|ing)|elevat(?:e|ed|ion)|overexpress(?:ed|ion)?|upregulat(?:e|ed|ion)|ectopic expression|forced expression|mimic(?: transfection| treatment)?|miRNA mimic)\b",
             re.IGNORECASE,
         ),
         "overexpression",
     ),
-    (re.compile(r"\b(knockdown|knock-down|depletion)\b", re.IGNORECASE), "knockdown"),
-    (re.compile(r"\b(inhibit(?:ed|ion)?|inhibitor|antagomir|anti-?mir)\b", re.IGNORECASE), "inhibition"),
+    (
+        re.compile(
+            r"\b(decreas(?:e|ed|ing)|reduc(?:e|ed|tion)|downregulat(?:e|ed|ion)|"
+            r"knock(?:ed)?[- ]?down|knockout|knock(?:ed)?[- ]?out|deplet(?:e|ed|ion))\b",
+            re.IGNORECASE,
+        ),
+        "knockdown",
+    ),
+    (
+        re.compile(
+            r"\b(inhibit(?:ed|ion)?|suppress(?:ed|ion)?|inhibitor(?: treatment)?|antagomir(?: treatment)?|anti-?mir)\b",
+            re.IGNORECASE,
+        ),
+        "inhibition",
+    ),
 ]
 _PHENOTYPE_PATTERNS = [
     (re.compile(r"\b(apoptosis|apoptotic process|apoptotic)\b", re.IGNORECASE), "apoptosis"),
@@ -306,18 +325,52 @@ def _normalize_optional_clarifications(qs: Dict[str, Any]) -> None:
     qs["needs_clarification"] = []
 
 
+def _observed_direction(value: Any) -> str:
+    observed = str(value or "").strip().lower()
+    if observed in {"promoted", "increased"}:
+        return "increased"
+    if observed in {"suppressed", "decreased"}:
+        return "decreased"
+    return "unknown"
+
+
+def _perturbation_direction(value: Any) -> str:
+    perturbation = str(value or "").strip().lower()
+    if perturbation == "overexpression":
+        return "increased"
+    if perturbation in {"knockdown", "inhibition"}:
+        return "decreased"
+    return "unknown"
+
+
 def _canonicalize_observed_change(value: Any) -> Optional[str]:
     text = str(value or "").strip().lower()
     if not text:
         return None
     if text in _LEGACY_DIRECTION_TO_OBSERVED:
         return _LEGACY_DIRECTION_TO_OBSERVED[text]
-    if text in {"promoted", "increased", "suppressed", "decreased", "associated"}:
+    if text in {
+        "promoted", "increased", "suppressed", "decreased",
+        "unchanged", "unknown", "associated",
+    }:
         return text
-    if text == "associated":
-        return "associated"
-    for pattern, canonical in _OBSERVED_CHANGE_PATTERNS:
-        if pattern.search(text):
+    matches = {
+        canonical
+        for pattern, canonical in _OBSERVED_CHANGE_PATTERNS
+        if pattern.search(text)
+    }
+    directions = {
+        _observed_direction(canonical)
+        for canonical in matches
+        if _observed_direction(canonical) in {"increased", "decreased"}
+    }
+    if len(directions) > 1:
+        return "unknown"
+    for canonical in (
+        "unchanged", "unknown", "promoted", "increased",
+        "suppressed", "decreased", "associated",
+    ):
+        if canonical in matches:
             return canonical
     return None
 
@@ -335,11 +388,209 @@ def _canonicalize_perturbation(value: Any) -> Optional[str]:
         return None
     if text in {"overexpression", "knockdown", "inhibition", "unknown"}:
         return text
-    for pattern, canonical in _PERTURBATION_PATTERNS:
-        if pattern.search(text):
-            return canonical
+    matches = [
+        canonical
+        for pattern, canonical in _PERTURBATION_PATTERNS
+        if pattern.search(text)
+    ]
+    directions = {_perturbation_direction(canonical) for canonical in matches}
+    directions.discard("unknown")
+    if len(directions) > 1:
+        return "unknown"
+    if matches:
+        return matches[0]
     return None
 
+
+def _directions_near_entity(
+    text: str,
+    entity_pattern: re.Pattern[str],
+    signal_patterns: List[tuple[re.Pattern[str], str]],
+    *,
+    max_distance: int = 60,
+) -> List[tuple[str, str]]:
+    """Associate direction words with an entity without crossing another named entity."""
+    results: List[tuple[str, str]] = []
+    for entity_match in entity_pattern.finditer(text):
+        for signal_pattern, label in signal_patterns:
+            for signal_match in signal_pattern.finditer(text):
+                if signal_match.end() <= entity_match.start():
+                    between = text[signal_match.end():entity_match.start()]
+                    distance = entity_match.start() - signal_match.end()
+                elif signal_match.start() >= entity_match.end():
+                    between = text[entity_match.end():signal_match.start()]
+                    distance = signal_match.start() - entity_match.end()
+                else:
+                    between = ""
+                    distance = 0
+                if distance > max_distance:
+                    continue
+                if _MIRNA_TOKEN_RE.search(between) or any(
+                    pattern.search(between) for pattern, _ in _PHENOTYPE_PATTERNS
+                ):
+                    continue
+                results.append((label, signal_match.group(0)))
+    return results
+
+
+def _extract_mirna_perturbation(question: str) -> Optional[str]:
+    text = str(question or "")
+    if not text:
+        return None
+    safe_patterns = [
+        (
+            re.compile(
+                r"\b(overexpress(?:ed|ion)?|upregulat(?:e|ed|ion)|elevat(?:e|ed|ion)|"
+                r"ectopic expression|forced expression|mimic(?: transfection| treatment)?|miRNA mimic)\b",
+                re.IGNORECASE,
+            ),
+            "overexpression",
+        ),
+        (
+            re.compile(
+                r"\b(downregulat(?:e|ed|ion)|knock(?:ed)?[- ]?down|knockout|"
+                r"knock(?:ed)?[- ]?out|deplet(?:e|ed|ion))\b",
+                re.IGNORECASE,
+            ),
+            "knockdown",
+        ),
+        (
+            re.compile(
+                r"\b(inhibitor(?: treatment)?|antagomir(?: treatment)?|anti-?mir)\b",
+                re.IGNORECASE,
+            ),
+            "inhibition",
+        ),
+    ]
+    associated = _directions_near_entity(
+        text, _MIRNA_TOKEN_RE, safe_patterns, max_distance=75
+    )
+    if not associated and _MIRNA_TEXT_RE.search(text):
+        for pattern, label in safe_patterns:
+            for match in pattern.finditer(text):
+                associated.append((label, match.group(0)))
+    mirna_expr = _MIRNA_TOKEN_RE.pattern
+    anchored_patterns = [
+        (re.compile(mirna_expr + r"(?:\s+levels?)?\s+(?:was|were|is|are)\s+(?:increased|elevated|upregulated)\b", re.IGNORECASE), "overexpression"),
+        (re.compile(r"\b(?:increased|elevated|upregulated)\s+(?:levels?\s+of\s+)?" + mirna_expr, re.IGNORECASE), "overexpression"),
+        (re.compile(mirna_expr + r"(?:\s+levels?)?\s+(?:was|were|is|are)\s+(?:decreased|reduced|inhibited|suppressed)\b", re.IGNORECASE), "inhibition"),
+        (re.compile(r"\b(?:decreased|reduced|inhibited|suppressed)\s+(?:levels?\s+of\s+)?" + mirna_expr, re.IGNORECASE), "inhibition"),
+        (re.compile(mirna_expr + r"\s+(?:increased|elevated|upregulated)\s*(?:(?:and|while|but)\b|[,;])", re.IGNORECASE), "overexpression"),
+        (re.compile(mirna_expr + r"\s+(?:decreased|reduced|inhibited|suppressed)\s*(?:(?:and|while|but)\b|[,;])", re.IGNORECASE), "inhibition"),
+    ]
+    for pattern, label in anchored_patterns:
+        match = pattern.search(text)
+        if match:
+            associated.append((label, match.group(0)))
+    phenotype_starts = [
+        match.start()
+        for pattern, _ in _PHENOTYPE_PATTERNS
+        for match in pattern.finditer(text)
+    ]
+    for mirna_match in _MIRNA_TOKEN_RE.finditer(text):
+        stop = min(
+            [position for position in phenotype_starts if position > mirna_match.end()]
+            or [min(len(text), mirna_match.end() + 90)]
+        )
+        segment = text[mirna_match.end():stop]
+        if re.search(r"\b(?:was|were|is|are|levels?)\b", segment, re.IGNORECASE):
+            if re.search(r"\b(?:increased|elevated|upregulated)\b", segment, re.IGNORECASE):
+                associated.append(("overexpression", segment))
+            if re.search(r"\b(?:decreased|reduced|inhibited|suppressed)\b", segment, re.IGNORECASE):
+                associated.append(("inhibition", segment))
+    if _MIRNA_TOKEN_RE.search(text):
+        for pattern, label in safe_patterns:
+            for match in pattern.finditer(text):
+                nearby = text[max(0, match.start() - 35):match.end() + 35]
+                if re.search(r"\b(?:it|mimic|inhibitor|antagomir)\b", nearby, re.IGNORECASE):
+                    associated.append((label, match.group(0)))
+    labels = [label for label, _ in associated]
+    directions = {_perturbation_direction(label) for label in labels}
+    directions.discard("unknown")
+    if len(directions) > 1:
+        return "unknown"
+    if not labels:
+        return None
+    if "inhibition" in labels:
+        return "inhibition"
+    if "knockdown" in labels:
+        return "knockdown"
+    return "overexpression"
+
+
+def _extract_observed_change(question: str, phenotype: Any) -> Optional[str]:
+    text = str(question or "")
+    phenotype_text = str(phenotype or "").strip()
+    if not text or not phenotype_text:
+        return None
+    phenotype_pattern = re.compile(
+        r"\b" + r"[\s_-]+".join(re.escape(token) for token in phenotype_text.split()) + r"\b",
+        re.IGNORECASE,
+    )
+    candidates: List[tuple[str, int, str]] = []
+    for phenotype_match in phenotype_pattern.finditer(text):
+        for signal_pattern, label in _OBSERVED_CHANGE_PATTERNS:
+            for signal_match in signal_pattern.finditer(text):
+                if signal_match.end() <= phenotype_match.start():
+                    between = text[signal_match.end():phenotype_match.start()]
+                    distance = phenotype_match.start() - signal_match.end()
+                    side = "before"
+                elif signal_match.start() >= phenotype_match.end():
+                    between = text[phenotype_match.end():signal_match.start()]
+                    distance = signal_match.start() - phenotype_match.end()
+                    side = "after"
+                else:
+                    between = ""
+                    distance = 0
+                    side = "overlap"
+                if distance > 55 or _MIRNA_TOKEN_RE.search(between):
+                    continue
+                prior_mirnas = [
+                    match for match in _MIRNA_TOKEN_RE.finditer(text[:signal_match.start()])
+                ]
+                if prior_mirnas:
+                    prior_mirna = prior_mirnas[-1]
+                    mirna_gap = text[prior_mirna.end():signal_match.start()]
+                    if (
+                        len(mirna_gap) <= 25
+                        and not (
+                            prior_mirna.end() <= phenotype_match.start() <= signal_match.start()
+                        )
+                        and re.search(
+                        r"\b(?:was|were|is|are|levels?)\b",
+                        mirna_gap,
+                        re.IGNORECASE,
+                        )
+                    ):
+                        continue
+                candidates.append((label, distance, side))
+    if not candidates:
+        return None
+    directional = [item for item in candidates if _observed_direction(item[0]) != "unknown"]
+    directions = {_observed_direction(item[0]) for item in directional}
+    if len(directions) > 1:
+        increased_sides = {
+            side for label, _, side in directional
+            if _observed_direction(label) == "increased"
+        }
+        decreased_sides = {
+            side for label, _, side in directional
+            if _observed_direction(label) == "decreased"
+        }
+        if increased_sides & decreased_sides:
+            return "unknown"
+        nearest = min(directional, key=lambda item: item[1])
+        return _observed_direction(nearest[0])
+    values = [value for value, _, _ in candidates]
+    if any(value == "unchanged" for value in values):
+        return "unchanged"
+    if any(value == "unknown" for value in values):
+        return "unknown"
+    if directions == {"increased"}:
+        return "increased"
+    if directions == {"decreased"}:
+        return "decreased"
+    return "associated" if "associated" in values else None
 
 def _infer_phenotype_name(text: str) -> Optional[str]:
     for pattern, phenotype in _PHENOTYPE_PATTERNS:
@@ -415,25 +666,26 @@ def _enrich_phenotype_context(question: str, context: Dict[str, Any]) -> Dict[st
     context = dict(context or {})
 
     phenotype = str(context.get("phenotype") or "").strip() or None
-    observed_change = _canonicalize_observed_change(
-        context.get("observed_change") or context.get("direction")
-    )
-    perturbation = _canonicalize_perturbation(context.get("miRNA_perturbation"))
+    supplied_observed = context.get("observed_change") or context.get("direction")
+    supplied_perturbation = context.get("miRNA_perturbation")
+    observed_change = _canonicalize_observed_change(supplied_observed)
+    perturbation = _canonicalize_perturbation(supplied_perturbation)
     raw_phrase = str(context.get("raw_phrase") or "").strip() or None
 
-    lowered_question = question_text.lower()
     if phenotype is None:
         phenotype = _infer_phenotype_name(question_text)
-    if observed_change is None:
-        observed_change = _canonicalize_observed_change(lowered_question)
-    if perturbation is None:
-        perturbation = _canonicalize_perturbation(lowered_question)
+    if not supplied_observed:
+        observed_change = _extract_observed_change(question_text, phenotype)
+    if not supplied_perturbation:
+        perturbation = _extract_mirna_perturbation(question_text)
 
     if raw_phrase is None and (phenotype or observed_change or perturbation):
         raw_phrase = question_text or None
 
     if perturbation is None and (phenotype or observed_change):
         perturbation = "unknown"
+    if observed_change is None and phenotype:
+        observed_change = "unknown"
 
     return {
         "phenotype": phenotype,
@@ -450,12 +702,17 @@ def build_directional_query_terms(phenotype: Any, expected_target_role: Any) -> 
     if not phenotype_text or role_text not in {"positive_regulator", "negative_regulator"}:
         return []
 
+    canonical_term = (
+        "positive regulation of " if role_text == "positive_regulator"
+        else "negative regulation of "
+    ) + phenotype_text.lower()
     phenotype_key = phenotype_text.lower()
     if phenotype_key in _DIRECTIONAL_PATHWAY_TERMS:
-        return list(_DIRECTIONAL_PATHWAY_TERMS[phenotype_key].get(role_text, []))
-
-    human_role = "positive regulation of" if role_text == "positive_regulator" else "negative regulation of"
-    return [f"{human_role} {phenotype_text.lower()}"]
+        terms = [canonical_term] + list(
+            _DIRECTIONAL_PATHWAY_TERMS[phenotype_key].get(role_text, [])
+        )
+        return list(dict.fromkeys(terms))
+    return [canonical_term]
 
 
 def infer_expected_target_role(phenotype_context: Dict[str, Any]) -> Dict[str, Any]:
@@ -469,45 +726,47 @@ def infer_expected_target_role(phenotype_context: Dict[str, Any]) -> Dict[str, A
 
     inference: Dict[str, Any] = {
         "enabled": bool(phenotype or raw_phrase),
-        "assumption": "miRNAs usually repress target gene expression",
+        "assumption": (
+            "Assumption based on typical miRNA-mediated repression: "
+            "miRNAs usually repress their direct targets."
+        ),
+        "expected_target_expression_change": "unknown",
         "expected_target_effect_on_phenotype": "unknown",
         "reasoning": "",
+        "confidence": "low",
     }
     if not inference["enabled"]:
         return inference
 
-    if perturbation == "overexpression":
-        if observed_change in {"promoted", "increased"}:
-            inference["expected_target_effect_on_phenotype"] = "negative_regulator"
-            inference["reasoning"] = (
-                f"The user reported miRNA overexpression increased {phenotype or 'the phenotype'}. "
-                "Since miRNAs usually repress target genes, the most direct target interpretation is "
-                f"repression of genes that normally suppress {phenotype or 'that phenotype'}."
-            )
-        elif observed_change in {"suppressed", "decreased"}:
-            inference["expected_target_effect_on_phenotype"] = "positive_regulator"
-            inference["reasoning"] = (
-                f"The user reported miRNA overexpression decreased {phenotype or 'the phenotype'}. "
-                "Since miRNAs usually repress target genes, the most direct target interpretation is "
-                f"repression of genes that normally promote {phenotype or 'that phenotype'}."
-            )
-        else:
-            inference["reasoning"] = (
-                "miRNA overexpression was mentioned, but the phenotype change was not directional enough "
-                "to infer whether direct targets are positive or negative regulators."
-            )
-        return inference
+    mirna_change = _perturbation_direction(perturbation)
+    phenotype_change = _observed_direction(observed_change)
+    if mirna_change == "increased":
+        inference["expected_target_expression_change"] = "decreased"
+    elif mirna_change == "decreased":
+        inference["expected_target_expression_change"] = "increased"
 
-    if perturbation in {"knockdown", "inhibition"}:
+    if mirna_change == "unknown" or phenotype_change == "unknown":
         inference["reasoning"] = (
-            "The user described miRNA knockdown or inhibition. Because that reduces repression of target genes, "
-            "direct directional target-role inference is treated as ambiguous here unless stronger context is provided."
+            "Either the miRNA perturbation or the observed phenotype direction is unknown, "
+            "unchanged, or contradictory. Target-role direction is therefore unknown, and "
+            "general phenotype pathways should be used without inventing directionality."
         )
         return inference
 
+    target_change = inference["expected_target_expression_change"]
+    expected_role = (
+        "positive_regulator" if target_change == phenotype_change
+        else "negative_regulator"
+    )
+    inference["expected_target_effect_on_phenotype"] = expected_role
+    inference["confidence"] = "moderate"
+    role_words = "promote" if expected_role == "positive_regulator" else "suppress"
+    phenotype_label = phenotype or "the phenotype"
     inference["reasoning"] = (
-        "The user did not provide a confident miRNA perturbation direction, so pathway filtering should stay "
-        "at the general phenotype level without assuming positive- or negative-regulator targets."
+        f"The miRNA was {mirna_change}, so under the typical repression assumption its "
+        f"direct targets are expected to be {target_change}. The phenotype was "
+        f"{phenotype_change}; therefore candidate targets that normally {role_words} "
+        f"{phenotype_label} are directionally consistent."
     )
     return inference
 
@@ -552,15 +811,21 @@ def _new_queryspec(question: str) -> Dict[str, Any]:
         },
         "target_role_inference": {
             "enabled": False,
-            "assumption": "miRNAs usually repress target gene expression",
+            "assumption": (
+                "Assumption based on typical miRNA-mediated repression: "
+                "miRNAs usually repress their direct targets."
+            ),
+            "expected_target_expression_change": "unknown",
             "expected_target_effect_on_phenotype": "unknown",
             "reasoning": "",
+            "confidence": "low",
         },
         "pathway_selection_request": {
             "enabled": False,
             "query_terms": [],
             "directional_query_terms": [],
             "strict": False,
+            "strict_directional": False,
         },
         "phenotype_keywords": [],
         "pathway_keywords": [],
@@ -651,12 +916,19 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
     direct_terms = qs["phenotype_keywords"] + qs["pathway_keywords"] + [str(term).strip() for term in (qs.get("pathway_selection_request", {}).get("query_terms") or []) if str(term).strip()]
     qs.setdefault(
         "pathway_selection_request",
-        {"enabled": False, "query_terms": [], "directional_query_terms": [], "strict": False},
+        {"enabled": False, "query_terms": [], "directional_query_terms": [], "strict": False, "strict_directional": False},
     )
     qs["pathway_selection_request"].setdefault("enabled", False)
     qs["pathway_selection_request"].setdefault("query_terms", [])
     qs["pathway_selection_request"].setdefault("directional_query_terms", [])
     qs["pathway_selection_request"].setdefault("strict", False)
+    qs["pathway_selection_request"].setdefault("strict_directional", False)
+    if re.search(
+        r"\b(?:strict(?:ly)? directional|directionally consistent only|only directionally consistent|only (?:positive|negative) regulators?)\b",
+        question,
+        re.IGNORECASE,
+    ):
+        qs["pathway_selection_request"]["strict_directional"] = True
 
     # Pathway filter
     qs.setdefault(
@@ -707,7 +979,10 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
         qs["phenotype_context"]["direction"] = None
 
     observed_change = qs["phenotype_context"].get("observed_change")
-    if observed_change not in {"promoted", "suppressed", "increased", "decreased", "associated", None}:
+    if observed_change not in {
+        "promoted", "suppressed", "increased", "decreased",
+        "unchanged", "unknown", "associated", None,
+    }:
         qs["phenotype_context"]["observed_change"] = None
 
     perturbation = qs["phenotype_context"].get("miRNA_perturbation")
@@ -729,12 +1004,8 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
     expected_role = (qs.get("target_role_inference") or {}).get("expected_target_effect_on_phenotype")
     if directional_terms and expected_role in {"positive_regulator", "negative_regulator"}:
         qs["pathway_selection_request"]["directional_query_terms"] = directional_terms
-    elif directional_terms:
-        qs["pathway_selection_request"]["directional_query_terms"] = list(
-            dict.fromkeys(directional_terms + existing_directional_terms)
-        )
     else:
-        qs["pathway_selection_request"]["directional_query_terms"] = existing_directional_terms
+        qs["pathway_selection_request"]["directional_query_terms"] = []
 
     pathway_enabled = bool(
         qs["pathway_selection_request"].get("enabled")

@@ -52,6 +52,11 @@ _MATCH_PRIORITY = {
     "controlled_ontology_relation": 2,
     "broader_semantic_association": 1,
 }
+_MATCH_TIER_PRIORITY = {
+    "exact_directional": 3,
+    "general_phenotype": 2,
+    "broader_related": 1,
+}
 
 # Each tuple is (term, relationship to the source concept, strength). These
 # expansions are deliberately small and auditable. Gene overlap is never used
@@ -98,6 +103,10 @@ _CONTROLLED_PHENOTYPE_TERMS: Dict[str, List[tuple[str, str, float]]] = {
         ("integrin signaling", "ontology", 0.86),
         ("regulation of actin cytoskeleton", "ontology", 0.86),
         ("epithelial mesenchymal transition", "ontology", 0.90),
+    ],
+    "emt": [
+        ("epithelial mesenchymal transition", "synonym", 0.98),
+        ("regulation of epithelial mesenchymal transition", "ontology", 0.94),
     ],
     "energy metabolism": [
         ("energy metabolism", "direct", 1.00),
@@ -165,6 +174,15 @@ def _normalize_text(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = _WORD_RE.sub(" ", text)
     return " ".join(text.split())
+
+
+def _explicit_directional_role(value: Any) -> str:
+    normalized = _normalize_text(value)
+    if "positive regulation of" in normalized:
+        return "positive_regulator"
+    if "negative regulation of" in normalized:
+        return "negative_regulator"
+    return "unknown"
 
 
 def _clean_scalar(value: Any) -> str:
@@ -379,6 +397,10 @@ def _build_pathway_query_candidates(queryspec: Dict[str, Any]) -> List[Dict[str,
 
     for term in raw_terms:
         normalized = _normalize_text(term)
+        pathway_role = _explicit_directional_role(normalized)
+        is_directional = bool(
+            normalized in directional_terms and pathway_role == expected_target_role
+        )
         relation = "ontology" if normalized in directional_terms else "direct"
         source_concept = phenotype or term
         if normalized in recognized_concepts:
@@ -391,6 +413,8 @@ def _build_pathway_query_candidates(queryspec: Dict[str, Any]) -> List[Dict[str,
                 "strength": 0.96 if relation == "ontology" else 1.0,
                 "source_concept": source_concept,
                 "explicit": normalized in explicit_terms or not recognized_concepts,
+                "match_tier": "exact_directional" if is_directional else "general_phenotype",
+                "pathway_role": pathway_role if is_directional else "unknown",
             }
         )
 
@@ -405,6 +429,13 @@ def _build_pathway_query_candidates(queryspec: Dict[str, Any]) -> List[Dict[str,
                     "strength": strength,
                     "source_concept": _clean_scalar(concept),
                     "explicit": False,
+                    "match_tier": (
+                        "general_phenotype"
+                        if relation in {"direct", "synonym"}
+                        or _normalize_text(term).startswith("regulation of ")
+                        else "broader_related"
+                    ),
+                    "pathway_role": "unknown",
                 }
             )
 
@@ -418,6 +449,8 @@ def _build_pathway_query_candidates(queryspec: Dict[str, Any]) -> List[Dict[str,
                 "strength": 0.96,
                 "source_concept": phenotype,
                 "explicit": False,
+                "match_tier": "general_phenotype",
+                "pathway_role": "unknown",
             }
         )
 
@@ -551,6 +584,10 @@ def _score_pathway_row(
             match_type = "exact_normalized_name_match"
             base_score = 1.0 if exact_name else 0.98
             matched_field = "name or identifier" if exact_name else "alias"
+        elif relation == "direct" and controlled_name_phrase:
+            match_type = "controlled_synonym"
+            base_score = 0.92
+            matched_field = "controlled phenotype name phrase"
         elif relation == "direct" and description_phrase:
             match_type = "exact_description_phrase_match"
             base_score = 0.93
@@ -609,6 +646,17 @@ def _score_pathway_row(
         )
         if penalty_reasons:
             rationale += "; penalized because " + " and ".join(penalty_reasons)
+        match_tier = candidate.get("match_tier", "broader_related")
+        pathway_role = candidate.get("pathway_role", "unknown")
+        if match_tier == "exact_directional" and (
+            _explicit_directional_role(pathway_name) != pathway_role
+        ):
+            match_tier = (
+                "general_phenotype"
+                if _normalize_text(candidate.get("source_concept")) in core_name
+                else "broader_related"
+            )
+            pathway_role = "unknown"
         result = {
             "pathway_id": pathway_id,
             "pathway_name": pathway_name,
@@ -617,15 +665,21 @@ def _score_pathway_row(
             "source_concept": candidate["source_concept"],
             "relevance_score": round(relevance_score, 3),
             "collection": collection,
+            "match_tier": match_tier,
+            "pathway_role": pathway_role,
+            "directional_match": match_tier == "exact_directional",
             "rationale": rationale,
+            "_tier_priority": _MATCH_TIER_PRIORITY[match_tier],
             "_match_priority": _MATCH_PRIORITY[match_type],
             "_collection_priority": _COLLECTION_PRIORITY[collection],
         }
         if best is None or (
+            result["_tier_priority"],
             result["_match_priority"],
             result["relevance_score"],
             result["_collection_priority"],
         ) > (
+            best["_tier_priority"],
             best["_match_priority"],
             best["relevance_score"],
             best["_collection_priority"],
@@ -638,6 +692,79 @@ def _score_pathway_row(
     return best
 
 
+
+def _pathway_role_for_phenotype(pathway_name: Any, phenotype: Any) -> str:
+    role = _explicit_directional_role(pathway_name)
+    phenotype_text = _clean_scalar(phenotype)
+    if role == "unknown" or not phenotype_text:
+        return "unknown"
+    normalized_name = _normalize_text(pathway_name)
+    suffixes = {_normalize_text(phenotype_text)}
+    for candidate_role in ("positive_regulator", "negative_regulator"):
+        for term in build_directional_query_terms(phenotype_text, candidate_role):
+            normalized_term = _normalize_text(term)
+            if " regulation of " in " " + normalized_term + " ":
+                suffixes.add(
+                    normalized_term.split("regulation of", 1)[1].strip()
+                )
+    return role if any(suffix and suffix in normalized_name for suffix in suffixes) else "unknown"
+
+
+def _build_gene_role_annotations(
+    gene_to_pathways_df: pd.DataFrame,
+    *,
+    gene_symbol_col: str,
+    pathway_name_col: Optional[str],
+    selected_genes: List[str],
+    phenotype: Any,
+    expected_role: Any,
+) -> Dict[str, Dict[str, Any]]:
+    selected_set = set(selected_genes)
+    evidence: Dict[str, Dict[str, List[str]]] = {
+        gene: {"positive_regulator": [], "negative_regulator": []}
+        for gene in selected_genes
+    }
+    if pathway_name_col is not None and phenotype:
+        normalized_genes = gene_to_pathways_df[gene_symbol_col].astype(str).str.strip().str.upper()
+        relevant_rows = gene_to_pathways_df.loc[normalized_genes.isin(selected_set)]
+        for _, row in relevant_rows.iterrows():
+            gene = str(row.get(gene_symbol_col) or "").strip().upper()
+            pathway_name = _clean_scalar(row.get(pathway_name_col))
+            role = _pathway_role_for_phenotype(pathway_name, phenotype)
+            if role in {"positive_regulator", "negative_regulator"}:
+                if pathway_name not in evidence[gene][role]:
+                    evidence[gene][role].append(pathway_name)
+
+    expected = _clean_scalar(expected_role).lower()
+    annotations: Dict[str, Dict[str, Any]] = {}
+    for gene in selected_genes:
+        positive = evidence[gene]["positive_regulator"]
+        negative = evidence[gene]["negative_regulator"]
+        observed_roles = {
+            role for role, names in evidence[gene].items() if names
+        }
+        if expected not in {"positive_regulator", "negative_regulator"}:
+            status = "unknown"
+        elif not observed_roles:
+            status = "absent"
+        elif observed_roles == {expected}:
+            status = "consistent"
+        else:
+            status = "conflicting"
+        annotations[gene] = {
+            "expected_role": expected if expected else "unknown",
+            "positive_regulator_pathways": positive,
+            "negative_regulator_pathways": negative,
+            "role_evidence": list(dict.fromkeys(positive + negative)),
+            "status": status,
+            "directionally_consistent": True if status == "consistent" else (
+                False if status == "conflicting" else None
+            ),
+            "evidence_confidence": "high" if observed_roles else "none",
+        }
+    return annotations
+
+
 def compact_pathway_selection(selection: Dict[str, Any], include_internal: bool = False) -> Dict[str, Any]:
     compact: Dict[str, Any] = {
         "enabled": bool(selection.get("enabled")),
@@ -646,7 +773,9 @@ def compact_pathway_selection(selection: Dict[str, Any], include_internal: bool 
         "direction": selection.get("direction"),
         "observed_change": selection.get("observed_change"),
         "miRNA_perturbation": selection.get("miRNA_perturbation"),
+        "expected_target_expression_change": selection.get("expected_target_expression_change"),
         "expected_target_effect_on_phenotype": selection.get("expected_target_effect_on_phenotype"),
+        "target_role_confidence": selection.get("target_role_confidence"),
         "query_terms": list(selection.get("query_terms") or []),
         "minimum_relevance_score": float(
             selection.get("minimum_relevance_score", _DEFAULT_MIN_RELEVANCE_SCORE)
@@ -667,6 +796,8 @@ def compact_pathway_selection(selection: Dict[str, Any], include_internal: bool 
             compact["_selected_gene_set"] = set(selection.get("_selected_gene_set") or set())
         if selection.get("_selected_gene_pathways") is not None:
             compact["_selected_gene_pathways"] = dict(selection.get("_selected_gene_pathways") or {})
+        if selection.get("_gene_role_annotations") is not None:
+            compact["_gene_role_annotations"] = dict(selection.get("_gene_role_annotations") or {})
     return compact
 
 
@@ -682,8 +813,15 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
         "direction": phenotype_context.get("direction"),
         "observed_change": phenotype_context.get("observed_change"),
         "miRNA_perturbation": phenotype_context.get("miRNA_perturbation"),
+        "expected_target_expression_change": target_role_inference.get(
+            "expected_target_expression_change"
+        ),
         "expected_target_effect_on_phenotype": target_role_inference.get(
             "expected_target_effect_on_phenotype"
+        ),
+        "target_role_confidence": target_role_inference.get("confidence"),
+        "strict_directional": bool(
+            (queryspec.get("pathway_selection_request") or {}).get("strict_directional")
         ),
         "query_terms": [],
         "minimum_relevance_score": _minimum_relevance_score(queryspec),
@@ -695,6 +833,7 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
         "warnings": [],
         "_selected_gene_set": set(),
         "_selected_gene_pathways": {},
+        "_gene_role_annotations": {},
     }
 
     if not enabled:
@@ -763,6 +902,7 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
 
     scored_matches.sort(
         key=lambda item: (
+            -item["_tier_priority"],
             -item["_match_priority"],
             -item["relevance_score"],
             -item["_collection_priority"],
@@ -841,4 +981,12 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
     selection["selected_gene_examples"] = selected_genes[:20]
     selection["_selected_gene_set"] = set(selected_genes)
     selection["_selected_gene_pathways"] = gene_pathway_map
+    selection["_gene_role_annotations"] = _build_gene_role_annotations(
+        gene_to_pathways_df,
+        gene_symbol_col=gene_symbol_col,
+        pathway_name_col=gene_pathway_name_col,
+        selected_genes=selected_genes,
+        phenotype=selection.get("phenotype"),
+        expected_role=selection.get("expected_target_effect_on_phenotype"),
+    )
     return selection

@@ -606,6 +606,9 @@ class RetrievalConfig:
     pathway_selection: Optional[Dict[str, Any]] = None
     pathway_gene_set: Optional[set[str]] = None
     pathway_gene_map: Optional[Dict[str, List[str]]] = None
+    target_role_inference: Optional[Dict[str, Any]] = None
+    gene_role_annotations: Optional[Dict[str, Dict[str, Any]]] = None
+    strict_directional: bool = False
 
     # Optional soft gates (off by default)
     require_binding_evidence: bool = False
@@ -1692,6 +1695,11 @@ def retrieve_candidates(
         "example_remaining_genes_after_filter": [],
         "pathway_gene_normalization": "upper",
         "n_after_pathway_filter": 0,
+        "directional_reranking_applied": False,
+        "strict_directional_filter_applied": False,
+        "n_directionally_consistent": 0,
+        "n_directionally_conflicting": 0,
+        "n_directional_role_absent": 0,
         "n_after_collapse_duplicates": 0,
         "n_final_shortlist": 0,
         "retrieval_structure_in_score": bool(get_use_structure_in_score()),
@@ -1831,6 +1839,54 @@ def retrieve_candidates(
             {_normalize_gene_symbol(gene) for gene in df["gene_symbol"].tolist() if str(gene or "").strip()}
         )[:20]
 
+    target_role_inference = cfg.target_role_inference or {}
+    expected_target_change = str(
+        target_role_inference.get("expected_target_expression_change") or "unknown"
+    )
+    expected_target_role = str(
+        target_role_inference.get("expected_target_effect_on_phenotype") or "unknown"
+    )
+    gene_role_annotations = {
+        _normalize_gene_symbol(gene): dict(annotation or {})
+        for gene, annotation in (cfg.gene_role_annotations or {}).items()
+    }
+    gene_keys = df["gene_symbol"].astype(str).map(_normalize_gene_symbol)
+    role_status = gene_keys.map(
+        lambda gene: (gene_role_annotations.get(gene) or {}).get(
+            "status", "unknown" if expected_target_role == "unknown" else "absent"
+        )
+    )
+    role_evidence = gene_keys.map(
+        lambda gene: list((gene_role_annotations.get(gene) or {}).get("role_evidence") or [])
+    )
+    positive_role_pathways = gene_keys.map(
+        lambda gene: list((gene_role_annotations.get(gene) or {}).get("positive_regulator_pathways") or [])
+    )
+    negative_role_pathways = gene_keys.map(
+        lambda gene: list((gene_role_annotations.get(gene) or {}).get("negative_regulator_pathways") or [])
+    )
+    consistency_score = role_status.map(
+        {"consistent": 1.0, "absent": 0.0, "unknown": 0.0, "conflicting": -1.0}
+    ).fillna(0.0)
+    diagnostics["n_directionally_consistent"] = int((role_status == "consistent").sum())
+    diagnostics["n_directionally_conflicting"] = int((role_status == "conflicting").sum())
+    diagnostics["n_directional_role_absent"] = int((role_status == "absent").sum())
+
+    if cfg.strict_directional and expected_target_role in {"positive_regulator", "negative_regulator"}:
+        keep = role_status == "consistent"
+        df = df.loc[keep].copy()
+        role_status = role_status.loc[keep]
+        role_evidence = role_evidence.loc[keep]
+        positive_role_pathways = positive_role_pathways.loc[keep]
+        negative_role_pathways = negative_role_pathways.loc[keep]
+        consistency_score = consistency_score.loc[keep]
+        diagnostics["strict_directional_filter_applied"] = True
+        if df.empty:
+            diagnostics["warnings"].append(
+                "Strict directional filtering was requested, but no candidates had high-confidence consistent role annotations."
+            )
+            return df.head(0), direction, diagnostics
+
     components = _compute_retrieval_components(
         df,
         cfg.tcga,
@@ -1871,6 +1927,16 @@ def retrieve_candidates(
         pathway_selected_gene=components["pathway_selected_gene"],
         pathway_match_count=components["pathway_match_count"],
         pathway_selected_names=components["pathway_selected_names"],
+        predicted_mirna_effect_on_target=expected_target_change,
+        expected_target_effect_on_phenotype=expected_target_role,
+        target_role_evidence=role_evidence,
+        target_role_positive_pathways=positive_role_pathways,
+        target_role_negative_pathways=negative_role_pathways,
+        target_role_evidence_status=role_status,
+        directionally_consistent=role_status.map(
+            {"consistent": True, "conflicting": False}
+        ),
+        directional_consistency_score=consistency_score,
     )
 
     df, ranking_info = apply_learned_score_ranking(
@@ -1879,6 +1945,16 @@ def retrieve_candidates(
         enabled=bool(get_use_learned_score() or _resolve_score_column(df, get_learned_score_column())),
     )
     diagnostics.update({k: v for k, v in ranking_info.items() if k != "warnings"})
+    if expected_target_role in {"positive_regulator", "negative_regulator"} and bool(
+        role_status.isin(["consistent", "conflicting"]).any()
+    ):
+        df = df.assign(_pre_directional_rank=np.arange(len(df), dtype=int))
+        df = df.sort_values(
+            ["directional_consistency_score", "_pre_directional_rank"],
+            ascending=[False, True],
+            kind="stable",
+        ).drop(columns=["_pre_directional_rank"])
+        diagnostics["directional_reranking_applied"] = True
     for warning in ranking_info.get("warnings", []):
         diagnostics["warnings"].append(warning)
 
@@ -1976,6 +2052,15 @@ def retrieve_from_queryspec(
             _normalize_gene_symbol(gene): list(names or [])
             for gene, names in pathway_gene_map.items()
         },
+        target_role_inference=queryspec.get("target_role_inference") or {},
+        gene_role_annotations=(
+            pathway_selection.get("_gene_role_annotations")
+            or pathway_selection.get("gene_role_annotations")
+            or {}
+        ),
+        strict_directional=bool(
+            (queryspec.get("pathway_selection_request") or {}).get("strict_directional")
+        ),
         require_binding_evidence=bool(filters.get("require_binding_evidence", False)),
         require_expression=bool(filters.get("require_expression", False)),
         collapse_duplicates=True,

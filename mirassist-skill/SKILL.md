@@ -99,14 +99,16 @@ BRCA, COAD, PRAD.
 (apoptosis, proliferation, EMT, invasion, migration, energy metabolism), pass `--phenotype`.
 If they describe an experiment, also pass the direction so the tool can infer whether the
 relevant targets are positive or negative regulators:
-- `--observed-change promoted|suppressed|increased|decreased|associated`
-- `--perturbation overexpression|knockdown|inhibition|unknown`
+- `--observed-change promoted|enhanced|suppressed|inhibited|increased|decreased|reduced|unchanged|unknown|associated`
+- `--perturbation overexpression|increased|mimic|knockdown|inhibition|inhibitor|antagomir|knockout|depletion|decreased|unknown`
 
-The logic (miRNAs usually repress their targets): with **overexpression**, a *promoted/
-increased* phenotype implies the direct targets are **negative regulators** of it; a
-*suppressed/decreased* phenotype implies **positive regulators**. Knockdown/inhibition is
-treated as ambiguous. When phenotype context is present, the tool restricts candidates to
-genes in matching pathways (grounded, filter-only) before scoring.
+The logic is an assumption based on typical miRNA-mediated repression. Increased miRNA
+(including mimic treatment) implies decreased target expression; decreased miRNA (including
+knockdown, inhibitor/antagomir, knockout, or depletion) implies increased target expression.
+Combining that with the observed phenotype direction yields the expected positive- or
+negative-regulator role. Unknown or contradictory directions remain unknown. General
+phenotype pathways are retained, while explicit directional GO/curated annotations are used
+as a reranking signal by default rather than a hard exclusion.
 
 **Other flags**
 - `--novel` - only novel/unvalidated targets (excludes miRTarBase-positive pairs). Use when

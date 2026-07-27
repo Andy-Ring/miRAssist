@@ -630,6 +630,17 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
         else:
             pathway_evidence.append("Retained by strict pathway filter")
 
+    predicted_target_change = str(row.get("predicted_mirna_effect_on_target") or "unknown")
+    expected_target_role = str(row.get("expected_target_effect_on_phenotype") or "unknown")
+    target_role_evidence = _as_list(row.get("target_role_evidence"))
+    positive_regulator_evidence = _as_list(row.get("target_role_positive_pathways"))
+    negative_regulator_evidence = _as_list(row.get("target_role_negative_pathways"))
+    target_role_status = str(row.get("target_role_evidence_status") or "unknown")
+    directionally_consistent = (
+        True if target_role_status == "consistent" else
+        False if target_role_status == "conflicting" else None
+    )
+
     caveats: List[str] = []
     if family_summary["functional_binding"]["available"]:
         caveats.append("Binding evidence supports physical association, not necessarily functional repression")
@@ -637,6 +648,10 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
         caveats.append("Thermodynamic stability is computational support, not structural confirmation")
     if family_summary["functional_repression"]["available"]:
         caveats.append("TCGA correlation is context evidence, not direct binding evidence")
+    if target_role_status == "absent":
+        caveats.append("No explicit positive- or negative-regulator pathway annotation was found")
+    elif target_role_status == "conflicting":
+        caveats.append("Positive- and negative-regulator pathway annotations conflict")
 
     curated_evidence = None
     if allow_mirtarbase and any(_as_int(row.get(col), 0) == 1 for col in MIRTARBASE_KNOWN_POSITIVE_COLUMNS):
@@ -726,6 +741,11 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
         "tcga_n_supported_contexts",
         "tcga_mean_spearman_rho",
         "pathway_selected_gene",
+        "predicted_mirna_effect_on_target",
+        "expected_target_effect_on_phenotype",
+        "target_role_evidence_status",
+        "directionally_consistent",
+        "directional_consistency_score",
     ]
     tcga_contexts = [tcga] if tcga else ["BRCA", "COAD", "PRAD"]
     for context in [str(item).upper() for item in tcga_contexts if item]:
@@ -774,6 +794,13 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
         "tcga_context_evidence": family_summary["functional_repression"]["key_evidence"],
         "pathway_evidence": pathway_evidence,
         "pathway_names": pathway_names,
+        "predicted_mirna_effect_on_target": predicted_target_change,
+        "expected_target_effect_on_phenotype": expected_target_role,
+        "target_role_evidence": target_role_evidence,
+        "positive_regulator_evidence": positive_regulator_evidence,
+        "negative_regulator_evidence": negative_regulator_evidence,
+        "target_role_evidence_status": target_role_status,
+        "directionally_consistent": directionally_consistent,
         "strongest_features": strongest_features[:8],
         "caveats": caveats,
         "raw_key_values": raw_key_values,

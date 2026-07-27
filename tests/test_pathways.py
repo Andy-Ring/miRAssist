@@ -17,7 +17,7 @@ from backend.pathways import (
     load_pathways,
     resolve_pathway_selection,
 )
-from backend.retrieval import retrieve_from_queryspec
+from backend.retrieval import RetrievalConfig, retrieve_candidates, retrieve_from_queryspec
 from backend.worker import _apply_query_overrides
 
 
@@ -676,6 +676,132 @@ class PlannerNormalizationTests(unittest.TestCase):
             "HALLMARK_ANGIOGENESIS",
         })
         self.assertGreater(selection["n_selected_genes"], 0)
+
+class DirectionalityTruthTableRegressionTests(unittest.TestCase):
+    def _parse(self, question: str) -> dict:
+        return _validate_and_fill(
+            {"mode": "mirna_to_targets", "mirna": "miR-1"},
+            question,
+        )
+
+    def test_all_four_mirna_phenotype_direction_combinations(self) -> None:
+        cases = [
+            ("miR-1 was decreased and apoptosis increased", "increased", "positive_regulator"),
+            ("miR-1 was decreased and apoptosis decreased", "increased", "negative_regulator"),
+            ("miR-1 was increased and apoptosis increased", "decreased", "negative_regulator"),
+            ("miR-1 was increased and apoptosis decreased", "decreased", "positive_regulator"),
+        ]
+        for question, target_change, role in cases:
+            with self.subTest(question=question):
+                inference = self._parse(question)["target_role_inference"]
+                self.assertEqual(inference["expected_target_expression_change"], target_change)
+                self.assertEqual(inference["expected_target_effect_on_phenotype"], role)
+                self.assertEqual(inference["confidence"], "moderate")
+
+    def test_unknown_mirna_perturbation_keeps_role_unknown(self) -> None:
+        qs = self._parse("miR-1 was measured while apoptosis increased")
+        self.assertEqual(qs["phenotype_context"]["miRNA_perturbation"], "unknown")
+        self.assertEqual(qs["target_role_inference"]["expected_target_expression_change"], "unknown")
+        self.assertEqual(qs["target_role_inference"]["expected_target_effect_on_phenotype"], "unknown")
+
+    def test_unknown_phenotype_direction_keeps_role_unknown(self) -> None:
+        qs = self._parse("miR-1 was increased in an apoptosis experiment")
+        self.assertEqual(qs["phenotype_context"]["observed_change"], "unknown")
+        self.assertEqual(qs["target_role_inference"]["expected_target_effect_on_phenotype"], "unknown")
+        self.assertEqual(qs["pathway_selection_request"]["directional_query_terms"], [])
+
+    def test_mimic_treatment_means_increased_mirna(self) -> None:
+        inference = self._parse("miR-1 mimic treatment enhanced apoptosis")["target_role_inference"]
+        self.assertEqual(inference["expected_target_expression_change"], "decreased")
+        self.assertEqual(inference["expected_target_effect_on_phenotype"], "negative_regulator")
+
+    def test_inhibitor_and_antagomir_mean_decreased_mirna(self) -> None:
+        for treatment in ("inhibitor treatment", "antagomir treatment"):
+            with self.subTest(treatment=treatment):
+                inference = self._parse(
+                    f"miR-1 {treatment} reduced apoptosis"
+                )["target_role_inference"]
+                self.assertEqual(inference["expected_target_expression_change"], "increased")
+                self.assertEqual(inference["expected_target_effect_on_phenotype"], "negative_regulator")
+
+    def test_contradictory_language_keeps_role_unknown(self) -> None:
+        qs = self._parse(
+            "miR-1 was increased and then decreased while apoptosis increased and later decreased"
+        )
+        self.assertEqual(qs["phenotype_context"]["miRNA_perturbation"], "unknown")
+        self.assertEqual(qs["phenotype_context"]["observed_change"], "unknown")
+        self.assertEqual(qs["target_role_inference"]["expected_target_effect_on_phenotype"], "unknown")
+
+    def test_explicit_positive_and_negative_regulator_pathways_match_expected_role(self) -> None:
+        pathways = pd.DataFrame([
+            {"pathway_id": "GO:P", "pathway_name": "positive regulation of apoptosis", "collection": "GO Biological Process"},
+            {"pathway_id": "GO:N", "pathway_name": "negative regulation of apoptosis", "collection": "GO Biological Process"},
+            {"pathway_id": "GO:G", "pathway_name": "apoptotic process", "collection": "GO Biological Process"},
+        ])
+        genes = pd.DataFrame([
+            {"gene_symbol": "POS", "pathway_id": "GO:P", "pathway_name": "positive regulation of apoptosis"},
+            {"gene_symbol": "NEG", "pathway_id": "GO:N", "pathway_name": "negative regulation of apoptosis"},
+            {"gene_symbol": "GENERAL", "pathway_id": "GO:G", "pathway_name": "apoptotic process"},
+        ])
+        cases = [
+            ("miR-1 increased and apoptosis decreased", "positive regulation of apoptosis"),
+            ("miR-1 increased and apoptosis increased", "negative regulation of apoptosis"),
+        ]
+        for question, expected_pathway in cases:
+            with self.subTest(question=question):
+                qs = self._parse(question)
+                with patch("backend.pathways.load_pathways", return_value=pathways), patch(
+                    "backend.pathways.load_gene_to_pathways", return_value=genes
+                ):
+                    selection = resolve_pathway_selection(qs)
+                self.assertEqual(selection["selected_pathways"][0]["pathway_name"], expected_pathway)
+                self.assertEqual(selection["selected_pathways"][0]["match_tier"], "exact_directional")
+                self.assertIn("apoptotic process", [item["pathway_name"] for item in selection["selected_pathways"]])
+
+
+
+    def test_directional_consistency_reranks_without_excluding_unannotated_candidates(self) -> None:
+        evidence = pd.DataFrame([
+            {"mirna_name": "hsa-miR-1-5p", "gene_symbol": "ABSENT", "support_count": 2, "mirdb_best_score": 99.0},
+            {"mirna_name": "hsa-miR-1-5p", "gene_symbol": "CONSISTENT", "support_count": 2, "mirdb_best_score": 10.0},
+            {"mirna_name": "hsa-miR-1-5p", "gene_symbol": "CONFLICT", "support_count": 2, "mirdb_best_score": 100.0},
+        ])
+        annotations = {
+            "CONSISTENT": {
+                "status": "consistent",
+                "role_evidence": ["negative regulation of apoptosis"],
+                "negative_regulator_pathways": ["negative regulation of apoptosis"],
+                "positive_regulator_pathways": [],
+            },
+            "CONFLICT": {
+                "status": "conflicting",
+                "role_evidence": ["positive regulation of apoptosis"],
+                "negative_regulator_pathways": [],
+                "positive_regulator_pathways": ["positive regulation of apoptosis"],
+            },
+        }
+        cfg = RetrievalConfig(
+            k_shortlist=3,
+            min_support=1,
+            pathway_selection={"enabled": False},
+            target_role_inference={
+                "expected_target_expression_change": "decreased",
+                "expected_target_effect_on_phenotype": "negative_regulator",
+            },
+            gene_role_annotations=annotations,
+        )
+        ranked, _, diagnostics = retrieve_candidates(evidence, "miR-1-5p", cfg)
+        self.assertEqual(
+            ranked["gene_symbol"].tolist(),
+            ["CONSISTENT", "ABSENT", "CONFLICT"],
+        )
+        self.assertTrue(diagnostics["directional_reranking_applied"])
+        self.assertEqual(ranked.iloc[0]["predicted_mirna_effect_on_target"], "decreased")
+        self.assertEqual(ranked.iloc[0]["target_role_evidence_status"], "consistent")
+        self.assertEqual(ranked.iloc[1]["target_role_evidence_status"], "absent")
+        self.assertEqual(ranked.iloc[2]["target_role_evidence_status"], "conflicting")
+
+
 
 class PhenotypePathwayRelevanceRegressionTests(unittest.TestCase):
     def setUp(self) -> None:

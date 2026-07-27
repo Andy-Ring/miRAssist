@@ -280,9 +280,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--tcga", default=None, help="TCGA code, e.g. BRCA, COAD, PRAD.")
     p.add_argument("--phenotype", default=None, help="e.g. apoptosis, proliferation, EMT, invasion, migration.")
     p.add_argument("--observed-change", default=None,
-                   choices=["promoted", "suppressed", "increased", "decreased", "associated"])
+                   choices=["promoted", "enhanced", "suppressed", "inhibited", "increased", "decreased", "reduced", "unchanged", "unknown", "associated"])
     p.add_argument("--perturbation", default=None,
-                   choices=["overexpression", "knockdown", "inhibition", "unknown"])
+                   choices=["overexpression", "increased", "elevated", "upregulated", "mimic", "knockdown", "inhibition", "inhibitor", "antagomir", "knockout", "depletion", "decreased", "reduced", "suppressed", "unknown"])
     p.add_argument("--phenotype-keyword", action="append", default=[], help="Repeatable extra phenotype keyword.")
     p.add_argument("--pathway-keyword", action="append", default=[], help="Repeatable extra pathway keyword.")
     p.add_argument("--novel", action="store_true", help="Restrict to novel/unvalidated (non-miRTarBase) targets.")

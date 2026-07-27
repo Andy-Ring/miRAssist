@@ -81,6 +81,9 @@ Required output format:
 - **Evidence support count:** X families
 - **Evidence families:** sequence_complementarity; thermodynamic_stability; sequence_conservation; target_site_accessibility; functional_binding; functional_repression
 - **Pathways:** pathway names if pathway filtering was applied, otherwise "Not pathway-filtered"
+- **Predicted miRNA effect on target:** increased / decreased / unknown
+- **Target role evidence:** explicit positive- or negative-regulator pathway annotations, or "Absent"
+- **Directional consistency:** consistent / conflicting / role evidence absent / unknown
 - **Key pieces of evidence:**
   - grouped by evidence family, with one or two primary metrics per family and percentiles treated only as modifiers
 - **Interpretation:** 2-4 sentences grounded only in the evidence card, explicitly distinguishing evidence breadth from evidence strength
@@ -162,9 +165,16 @@ def build_user_prompt(
         if pathway_selection.get("warnings"):
             ctx_lines.append(f"- Pathway warnings: {'; '.join(pathway_selection.get('warnings') or [])}")
     if target_role_inference.get("enabled"):
+        assumption = str(target_role_inference.get("assumption") or "").strip()
         reasoning = str(target_role_inference.get("reasoning") or "").strip()
+        if assumption:
+            ctx_lines.append(f"- Biological assumption: {assumption}")
         if reasoning:
             ctx_lines.append(f"- Target-role interpretation: {reasoning}")
+        ctx_lines.append(
+            "- Expected target expression change: "
+            + str(target_role_inference.get("expected_target_expression_change") or "unknown")
+        )
     if pathway_selection.get("enabled") and target_role_inference.get("enabled"):
         phenotype = phenotype_context.get("phenotype")
         expected_role = target_role_inference.get("expected_target_effect_on_phenotype")
@@ -215,7 +225,8 @@ Requirements:
 - A candidate with more categories may still be lower confidence if most values are weak or typical.
 - Do not invent percentiles, pathway membership, or gene-phenotype links.
 - Do not claim a candidate belongs to a pathway unless the card explicitly says it passed the pathway filter or names the pathways.
-- If directional phenotype logic is provided, explain it as a repression-consistent candidate-target interpretation rather than proof of causality.
+- If directional phenotype logic is provided, label it as an assumption based on typical miRNA-mediated repression and explain it in plain language, not as proof of causality.
+- For every candidate, report the predicted miRNA effect on target expression, explicit positive/negative-regulator evidence, directional consistency, and whether role evidence is absent or conflicting.
 - For gene -> miRNAs tasks, describe results as candidate miRNA regulators of the queried gene or miRNAs predicted to target/regulate that gene.
 - For gene -> miRNAs tasks, do not describe the gene as a miRNA and do not call the returned miRNAs "targets" of the gene.
 - Use the required output structure from the system prompt.
@@ -271,6 +282,21 @@ Evidence cards:
             f"Context strength tier: {context_strength_tier}",
             f"Evidence strength summary: {evidence_strength_summary}",
             "Pathways: " + ("; ".join(pathway_names) if pathway_names else "Not pathway-filtered"),
+            "Predicted miRNA effect on target: " + str(card.get("predicted_mirna_effect_on_target") or "unknown"),
+            "Expected target role: " + str(card.get("expected_target_effect_on_phenotype") or "unknown"),
+            "Target role evidence: " + (
+                "; ".join(card.get("target_role_evidence") or [])
+                if card.get("target_role_evidence") else "Absent"
+            ),
+            "Positive-regulator evidence: " + (
+                "; ".join(card.get("positive_regulator_evidence") or [])
+                if card.get("positive_regulator_evidence") else "Absent"
+            ),
+            "Negative-regulator evidence: " + (
+                "; ".join(card.get("negative_regulator_evidence") or [])
+                if card.get("negative_regulator_evidence") else "Absent"
+            ),
+            "Directional consistency: " + str(card.get("target_role_evidence_status") or "unknown"),
             "Other evidence details: " + ("; ".join(card.get("strongest_features") or []) or "None"),
             "Raw key values: " + raw_value_line,
             "Caveats: " + ("; ".join(card.get("caveats") or []) or "None"),
