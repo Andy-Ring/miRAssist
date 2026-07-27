@@ -51,7 +51,8 @@ outperforms individual external prediction tools (TargetScan, miRDB, DIANA-micro
 RNA22) at recovering held-out miRTarBase positives (AUROC 0.835 on the test set). A large
 language model (LLM) planner and synthesis layer then lets users ask natural-language
 questions and receive ranked candidates with evidence-grounded explanations, including
-context-aware filtering by biological pathway (MSigDB) and cancer type (TCGA).
+context-aware filtering by GO Biological Process, Reactome, WikiPathways, and Hallmark
+gene sets, plus cancer type (TCGA).
 
 Every reported score, percentile, and pathway membership comes from the database — the
 language layer is instructed never to invent numbers or gene–phenotype relationships.
@@ -70,8 +71,9 @@ language layer is instructed never to invent numbers or gene–phenotype relatio
    the backend XGBoost score (with a transparent fallback to a manual composite score when
    a learned score is unavailable).
 3. **Context-aware filtering** — when a question names a pathway, the search is restricted
-   to genes in matching MSigDB gene sets; when it names a cancer type, functional-repression
-   evidence is filtered to that TCGA cohort (BRCA, COAD, PRAD).
+   to genes in matching GO Biological Process, Reactome, WikiPathways, or Hallmark sets;
+   when it names a cancer type, functional-repression evidence is filtered to that TCGA
+   cohort (BRCA, COAD, PRAD).
 4. **Synthesis** — an LLM writes an evidence-grounded explanation using only backend-computed
    values and labels.
 

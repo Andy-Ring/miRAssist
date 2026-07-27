@@ -28,30 +28,136 @@ _GENE_TO_PATHWAYS_CACHE: Optional[pd.DataFrame] = None
 _GENE_TO_PATHWAYS_SOURCE: Optional[str] = None
 
 _WORD_RE = re.compile(r"[^a-z0-9]+")
-_PHENOTYPE_SYNONYMS: Dict[str, List[str]] = {
+_DEFAULT_MIN_RELEVANCE_SCORE = 0.72
+_COLLECTION_PRIORITY = {
+    "GO Biological Process": 4,
+    "Reactome": 3,
+    "WikiPathways": 2,
+    "Other curated": 2,
+    "Hallmark": 1,
+    "Unknown": 0,
+}
+_COLLECTION_SCORE_BONUS = {
+    "GO Biological Process": 0.04,
+    "Reactome": 0.03,
+    "WikiPathways": 0.02,
+    "Other curated": 0.01,
+    "Hallmark": 0.0,
+    "Unknown": 0.0,
+}
+_MATCH_PRIORITY = {
+    "exact_normalized_name_match": 4,
+    "exact_description_phrase_match": 3,
+    "controlled_synonym": 2,
+    "controlled_ontology_relation": 2,
+    "broader_semantic_association": 1,
+}
+
+# Each tuple is (term, relationship to the source concept, strength). These
+# expansions are deliberately small and auditable. Gene overlap is never used
+# to infer phenotype relevance.
+_CONTROLLED_PHENOTYPE_TERMS: Dict[str, List[tuple[str, str, float]]] = {
+    "cell migration": [
+        ("cell migration", "direct", 1.00),
+        ("regulation of cell migration", "ontology", 0.94),
+        ("cell motility", "synonym", 0.93),
+        ("chemotaxis", "ontology", 0.90),
+        ("focal adhesion", "ontology", 0.88),
+        ("extracellular matrix organization", "ontology", 0.88),
+        ("integrin signaling", "ontology", 0.88),
+        ("regulation of actin cytoskeleton", "ontology", 0.88),
+        ("epithelial mesenchymal transition", "ontology", 0.86),
+    ],
+    "migration": [
+        ("cell migration", "synonym", 0.98),
+        ("regulation of cell migration", "ontology", 0.94),
+        ("cell motility", "synonym", 0.93),
+        ("chemotaxis", "ontology", 0.90),
+        ("focal adhesion", "ontology", 0.88),
+        ("extracellular matrix organization", "ontology", 0.88),
+        ("integrin signaling", "ontology", 0.88),
+        ("regulation of actin cytoskeleton", "ontology", 0.88),
+        ("epithelial mesenchymal transition", "ontology", 0.86),
+    ],
+    "cell invasion": [
+        ("cell invasion", "direct", 1.00),
+        ("cell migration", "ontology", 0.93),
+        ("cell motility", "ontology", 0.91),
+        ("focal adhesion", "ontology", 0.88),
+        ("extracellular matrix organization", "ontology", 0.88),
+        ("integrin signaling", "ontology", 0.86),
+        ("regulation of actin cytoskeleton", "ontology", 0.86),
+        ("epithelial mesenchymal transition", "ontology", 0.90),
+    ],
+    "invasion": [
+        ("cell invasion", "synonym", 0.98),
+        ("cell migration", "ontology", 0.93),
+        ("cell motility", "ontology", 0.91),
+        ("focal adhesion", "ontology", 0.88),
+        ("extracellular matrix organization", "ontology", 0.88),
+        ("integrin signaling", "ontology", 0.86),
+        ("regulation of actin cytoskeleton", "ontology", 0.86),
+        ("epithelial mesenchymal transition", "ontology", 0.90),
+    ],
     "energy metabolism": [
-        "energy metabolism",
-        "metabolic reprogramming",
-        "glycolysis",
-        "oxidative phosphorylation",
-        "cellular respiration",
-        "mitochondrial function",
-        "atp metabolism",
+        ("energy metabolism", "direct", 1.00),
+        ("metabolic reprogramming", "ontology", 0.84),
+        ("glycolysis", "ontology", 0.90),
+        ("oxidative phosphorylation", "ontology", 0.90),
+        ("cellular respiration", "ontology", 0.88),
+        ("mitochondrial function", "ontology", 0.84),
+        ("atp metabolism", "ontology", 0.86),
     ],
     "apoptosis": [
-        "apoptosis",
-        "apoptotic process",
+        ("apoptosis", "direct", 1.00),
+        ("apoptotic process", "synonym", 0.96),
     ],
-    "cell invasion": ["cell invasion", "cell motility", "epithelial mesenchymal transition", "EMT", "focal adhesion", "extracellular matrix organization", "ECM receptor interaction", "regulation of actin cytoskeleton", "integrin signaling", "cell adhesion", "cell junction organization", "matrix metalloproteinase"],
-    "invasion": ["cell invasion", "cell motility", "epithelial mesenchymal transition", "EMT", "focal adhesion", "extracellular matrix organization", "ECM receptor interaction", "regulation of actin cytoskeleton", "integrin signaling", "cell adhesion", "cell junction organization", "matrix metalloproteinase"],
-    "cell migration": ["cell migration", "cell motility", "epithelial mesenchymal transition", "EMT", "focal adhesion", "extracellular matrix organization", "ECM receptor interaction", "regulation of actin cytoskeleton", "integrin signaling", "cell adhesion", "cell junction organization", "matrix metalloproteinase"],
-    "migration": ["cell migration", "cell motility", "epithelial mesenchymal transition", "EMT", "focal adhesion", "extracellular matrix organization", "ECM receptor interaction", "regulation of actin cytoskeleton", "integrin signaling", "cell adhesion", "cell junction organization", "matrix metalloproteinase"],
-    "cell proliferation": ["cell proliferation", "cell cycle", "growth factor signaling", "survival signaling"],
-    "proliferation": ["cell proliferation", "cell cycle", "growth factor signaling", "survival signaling"],
-    "cell survival": ["cell survival", "survival signaling", "anti apoptotic", "PI3K AKT signaling"],
-    "survival": ["cell survival", "survival signaling", "anti apoptotic", "PI3K AKT signaling"],
-    "angiogenesis": ["angiogenesis", "vascular endothelial growth factor", "VEGF signaling", "blood vessel development"],
-    "metastasis": ["metastasis", "cell migration", "cell invasion", "EMT", "focal adhesion", "extracellular matrix organization"],
+    "cell proliferation": [
+        ("cell proliferation", "direct", 1.00),
+        ("cell cycle", "ontology", 0.82),
+        ("growth factor signaling", "ontology", 0.78),
+        ("survival signaling", "ontology", 0.76),
+    ],
+    "proliferation": [
+        ("cell proliferation", "synonym", 0.98),
+        ("cell cycle", "ontology", 0.82),
+        ("growth factor signaling", "ontology", 0.78),
+        ("survival signaling", "ontology", 0.76),
+    ],
+    "cell survival": [
+        ("cell survival", "direct", 1.00),
+        ("survival signaling", "ontology", 0.86),
+        ("anti apoptotic", "ontology", 0.82),
+        ("pi3k akt signaling", "ontology", 0.80),
+    ],
+    "survival": [
+        ("cell survival", "synonym", 0.98),
+        ("survival signaling", "ontology", 0.86),
+        ("anti apoptotic", "ontology", 0.82),
+        ("pi3k akt signaling", "ontology", 0.80),
+    ],
+    "angiogenesis": [
+        ("angiogenesis", "direct", 1.00),
+        ("vascular endothelial growth factor", "ontology", 0.90),
+        ("vegf signaling", "ontology", 0.88),
+        ("blood vessel development", "ontology", 0.88),
+    ],
+    "metastasis": [
+        ("metastasis", "direct", 1.00),
+        ("cell migration", "ontology", 0.88),
+        ("cell invasion", "ontology", 0.90),
+        ("epithelial mesenchymal transition", "ontology", 0.88),
+        ("focal adhesion", "ontology", 0.82),
+        ("extracellular matrix organization", "ontology", 0.84),
+    ],
+}
+_PHENOTYPE_PRIMARY_EXCLUSIONS = {
+    "cell migration": ("adipogenesis", "xenobiotic metabolism"),
+    "migration": ("adipogenesis", "xenobiotic metabolism"),
+}
+_SEMANTIC_STOPWORDS = {
+    "a", "an", "and", "by", "for", "in", "of", "pathway", "process", "signaling",
+    "the", "to",
 }
 
 
@@ -59,6 +165,65 @@ def _normalize_text(value: Any) -> str:
     text = str(value or "").strip().lower()
     text = _WORD_RE.sub(" ", text)
     return " ".join(text.split())
+
+
+def _clean_scalar(value: Any) -> str:
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip()
+
+
+def _normalize_pathway_name(value: Any) -> str:
+    normalized = _normalize_text(value)
+    normalized = re.sub(
+        r"^(?:hallmark|reactome|wikipathways|wp|go biological process)\s+",
+        "",
+        normalized,
+    )
+    normalized = re.sub(r"\s+(?:go\s+\d+|wp\s*\d+)$", "", normalized)
+    return normalized
+
+
+def _infer_collection(row: pd.Series, pathway_name: str, pathway_id: str) -> str:
+    metadata = " ".join(
+        _clean_scalar(row.get(col))
+        for col in row.index
+        if str(col).strip().lower() in {
+            "collection", "collection_name", "category", "source", "database", "library"
+        }
+    )
+    normalized = _normalize_text(f"{metadata} {pathway_name} {pathway_id}")
+    if re.search(r"\bgo\b", normalized) and (
+        "biological process" in normalized or re.search(r"\bgo\s+\d+", normalized)
+    ):
+        return "GO Biological Process"
+    if "reactome" in normalized:
+        return "Reactome"
+    if "wikipathway" in normalized or re.search(r"\bwp\s*\d+\b", normalized):
+        return "WikiPathways"
+    if "hallmark" in normalized:
+        return "Hallmark"
+    if any(token in normalized for token in ("curated", "kegg", "biocarta", "pid")):
+        return "Other curated"
+    return "Unknown"
+
+
+def _split_aliases(value: Any) -> List[str]:
+    text = _clean_scalar(value)
+    if not text:
+        return []
+    text = text.strip("[]")
+    aliases = re.split(r"[|;,]", text)
+    return [
+        alias.strip().strip("'\"")
+        for alias in aliases
+        if alias.strip().strip("'\"")
+    ]
 
 
 def _parquet_fallback_enabled() -> bool:
@@ -113,7 +278,12 @@ def _load_lookup_table(path: Path, table_name: str) -> pd.DataFrame:
             raise RuntimeError(f"{table_name} resolved to Parquet while Parquet fallback is disabled.")
         df = pd.read_parquet(path)
     elif file_type in {"csv", "csv.gz"}:
-        df = pd.read_csv(path, compression="gzip" if file_type == "csv.gz" else None)
+        # Gene symbols such as NA are data, not missing-value sentinels.
+        df = pd.read_csv(
+            path,
+            compression="gzip" if file_type == "csv.gz" else None,
+            keep_default_na=False,
+        )
     else:
         raise ValueError(f"Unsupported {table_name} file type: {path}")
     logger.info(
@@ -164,52 +334,119 @@ def _pick_column(df: pd.DataFrame, candidates: Iterable[str]) -> Optional[str]:
     return None
 
 
-def _build_pathway_query_terms(queryspec: Dict[str, Any]) -> List[str]:
+def _build_pathway_query_candidates(queryspec: Dict[str, Any]) -> List[Dict[str, Any]]:
     pathway_request = queryspec.get("pathway_selection_request") or {}
     phenotype_context = queryspec.get("phenotype_context") or {}
     target_role_inference = queryspec.get("target_role_inference") or {}
+    phenotype = _clean_scalar(phenotype_context.get("phenotype"))
+    expected_target_role = _clean_scalar(
+        target_role_inference.get("expected_target_effect_on_phenotype")
+    ).lower()
 
-    terms: List[str] = []
+    explicit_terms = {
+        _normalize_text(term)
+        for term in (queryspec.get("pathway_keywords") or [])
+        if _normalize_text(term)
+    }
+    directional_terms = {
+        _normalize_text(term)
+        for term in (
+            list(pathway_request.get("directional_query_terms") or [])
+            + build_directional_query_terms(phenotype, expected_target_role)
+        )
+        if _normalize_text(term)
+    }
+
+    raw_terms: List[str] = []
     for source in (
         pathway_request.get("query_terms") or [],
         pathway_request.get("directional_query_terms") or [],
         queryspec.get("phenotype_keywords") or [],
         queryspec.get("pathway_keywords") or [],
+        [phenotype] if phenotype else [],
     ):
-        for term in source:
-            text = str(term or "").strip()
-            if text:
-                terms.append(text)
+        raw_terms.extend(_clean_scalar(term) for term in source if _clean_scalar(term))
 
-    phenotype = str(phenotype_context.get("phenotype") or "").strip()
-    observed_change = str(phenotype_context.get("observed_change") or "").strip().lower()
-    raw_phrase = str(phenotype_context.get("raw_phrase") or "").strip()
-    expected_target_role = str(
-        target_role_inference.get("expected_target_effect_on_phenotype") or ""
-    ).strip().lower()
-
-    # The original question/raw phrase is intentionally not a pathway term.
-    # Search concise concepts first, then controlled expansions.
+    candidates: List[Dict[str, Any]] = []
+    concept_inputs = list(queryspec.get("phenotype_keywords") or [])
     if phenotype:
-        terms.append(phenotype)
+        concept_inputs.append(phenotype)
+    recognized_concepts = {
+        _normalize_text(concept)
+        for concept in concept_inputs
+        if _normalize_text(concept) in _CONTROLLED_PHENOTYPE_TERMS
+    }
 
-    synonym_terms = []
-    for concept in list(queryspec.get("phenotype_keywords") or []) + [phenotype]:
-        synonym_terms.extend(_PHENOTYPE_SYNONYMS.get(str(concept).strip().lower(), []))
-    terms.extend(synonym_terms)
-    terms.extend(build_directional_query_terms(phenotype, expected_target_role))
-
-    if phenotype.lower() == "apoptosis" and observed_change == "associated":
-        terms.append("apoptotic process")
-
-    seen = set()
-    ordered_terms: List[str] = []
-    for term in terms:
+    for term in raw_terms:
         normalized = _normalize_text(term)
-        if normalized and normalized not in seen:
-            seen.add(normalized)
-            ordered_terms.append(term.strip())
-    return ordered_terms
+        relation = "ontology" if normalized in directional_terms else "direct"
+        source_concept = phenotype or term
+        if normalized in recognized_concepts:
+            source_concept = term
+        candidates.append(
+            {
+                "term": term,
+                "normalized": normalized,
+                "relation": relation,
+                "strength": 0.96 if relation == "ontology" else 1.0,
+                "source_concept": source_concept,
+                "explicit": normalized in explicit_terms or not recognized_concepts,
+            }
+        )
+
+    for concept in concept_inputs:
+        concept_key = _normalize_text(concept)
+        for term, relation, strength in _CONTROLLED_PHENOTYPE_TERMS.get(concept_key, []):
+            candidates.append(
+                {
+                    "term": term,
+                    "normalized": _normalize_text(term),
+                    "relation": relation,
+                    "strength": strength,
+                    "source_concept": _clean_scalar(concept),
+                    "explicit": False,
+                }
+            )
+
+    observed_change = _clean_scalar(phenotype_context.get("observed_change")).lower()
+    if _normalize_text(phenotype) == "apoptosis" and observed_change == "associated":
+        candidates.append(
+            {
+                "term": "apoptotic process",
+                "normalized": "apoptotic process",
+                "relation": "synonym",
+                "strength": 0.96,
+                "source_concept": phenotype,
+                "explicit": False,
+            }
+        )
+
+    best_by_term: Dict[str, Dict[str, Any]] = {}
+    ordered: List[str] = []
+    for candidate in candidates:
+        normalized = candidate["normalized"]
+        if not normalized:
+            continue
+        if normalized not in best_by_term:
+            ordered.append(normalized)
+            best_by_term[normalized] = candidate
+            continue
+        current = best_by_term[normalized]
+        if (
+            bool(candidate["explicit"]),
+            float(candidate["strength"]),
+            candidate["relation"] == "direct",
+        ) > (
+            bool(current["explicit"]),
+            float(current["strength"]),
+            current["relation"] == "direct",
+        ):
+            best_by_term[normalized] = candidate
+    return [best_by_term[normalized] for normalized in ordered]
+
+
+def _build_pathway_query_terms(queryspec: Dict[str, Any]) -> List[str]:
+    return [candidate["term"] for candidate in _build_pathway_query_candidates(queryspec)]
 
 
 def _pathway_context_enabled(queryspec: Dict[str, Any]) -> bool:
@@ -223,6 +460,184 @@ def _pathway_context_enabled(queryspec: Dict[str, Any]) -> bool:
     )
 
 
+
+def _minimum_relevance_score(queryspec: Dict[str, Any]) -> float:
+    configured = (queryspec.get("pathway_filter") or {}).get(
+        "min_relevance_score", _DEFAULT_MIN_RELEVANCE_SCORE
+    )
+    try:
+        score = float(configured)
+    except (TypeError, ValueError):
+        score = _DEFAULT_MIN_RELEVANCE_SCORE
+    return max(0.0, min(1.0, score))
+
+
+def _semantic_overlap_score(term: str, pathway_text: str) -> float:
+    term_tokens = {
+        token for token in term.split() if token not in _SEMANTIC_STOPWORDS
+    }
+    pathway_tokens = {
+        token for token in pathway_text.split() if token not in _SEMANTIC_STOPWORDS
+    }
+    overlap = term_tokens & pathway_tokens
+    if len(overlap) < 2:
+        return 0.0
+    coverage = len(overlap) / max(1, len(term_tokens))
+    precision = len(overlap) / max(1, len(pathway_tokens))
+    if coverage < 0.66:
+        return 0.0
+    return min(0.71, 0.56 + 0.10 * coverage + 0.05 * precision)
+
+
+def _is_controlled_name_phrase(term: str, pathway_name: str) -> bool:
+    if not term or term not in pathway_name:
+        return False
+    remainder = pathway_name.replace(term, " ", 1)
+    extra_tokens = set(remainder.split())
+    allowed_modifiers = {
+        "assembly", "cell", "disassembly", "negative", "of", "organization",
+        "positive", "regulation",
+    }
+    return len(extra_tokens) <= 3 and extra_tokens.issubset(allowed_modifiers)
+
+
+def _score_pathway_row(
+    row: pd.Series,
+    *,
+    pathway_id_col: Optional[str],
+    pathway_name_col: str,
+    description_cols: List[str],
+    alias_cols: List[str],
+    candidates: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    pathway_name = _clean_scalar(row.get(pathway_name_col))
+    pathway_id = _clean_scalar(row.get(pathway_id_col)) if pathway_id_col else pathway_name
+    pathway_id = pathway_id or pathway_name
+    full_name = _normalize_text(pathway_name)
+    core_name = _normalize_pathway_name(pathway_name)
+    normalized_id = _normalize_text(pathway_id)
+    descriptions = [
+        _clean_scalar(row.get(col)) for col in description_cols if _clean_scalar(row.get(col))
+    ]
+    description = _normalize_text(" | ".join(descriptions))
+    aliases = [
+        alias
+        for col in alias_cols
+        for alias in _split_aliases(row.get(col))
+    ]
+    normalized_aliases = [_normalize_text(alias) for alias in aliases]
+    collection = _infer_collection(row, pathway_name, pathway_id)
+    collection_bonus = _COLLECTION_SCORE_BONUS[collection]
+
+    best: Optional[Dict[str, Any]] = None
+    matched_terms: List[str] = []
+    for candidate in candidates:
+        term = candidate["normalized"]
+        if not term:
+            continue
+        relation = candidate["relation"]
+        strength = float(candidate["strength"])
+        match_type = ""
+        base_score = 0.0
+        matched_field = ""
+
+        exact_name = term in {full_name, core_name, normalized_id}
+        exact_alias = term in normalized_aliases
+        name_phrase = bool(term and (term in full_name or term in core_name))
+        controlled_name_phrase = _is_controlled_name_phrase(term, core_name)
+        description_phrase = bool(term and term in description)
+
+        if relation == "direct" and (exact_name or exact_alias):
+            match_type = "exact_normalized_name_match"
+            base_score = 1.0 if exact_name else 0.98
+            matched_field = "name or identifier" if exact_name else "alias"
+        elif relation == "direct" and description_phrase:
+            match_type = "exact_description_phrase_match"
+            base_score = 0.93
+            matched_field = "description"
+        elif relation in {"synonym", "ontology"} and (
+            exact_name or exact_alias or controlled_name_phrase or description_phrase
+        ):
+            match_type = (
+                "controlled_synonym" if relation == "synonym"
+                else "controlled_ontology_relation"
+            )
+            if exact_name or exact_alias:
+                base_score = strength
+                matched_field = "name or controlled alias"
+            elif controlled_name_phrase:
+                base_score = strength * 0.94
+                matched_field = "name phrase or controlled alias"
+            else:
+                base_score = strength * 0.90
+                matched_field = "description"
+        elif relation == "direct" and name_phrase:
+            match_type = "broader_semantic_association"
+            base_score = 0.66
+            matched_field = "broader name phrase"
+        else:
+            semantic_score = _semantic_overlap_score(
+                term, " ".join([core_name, description] + normalized_aliases)
+            )
+            if semantic_score:
+                match_type = "broader_semantic_association"
+                base_score = semantic_score * strength
+                matched_field = "token-level semantic overlap"
+
+        if not match_type:
+            continue
+        matched_terms.append(candidate["term"])
+        relevance_score = min(1.0, base_score + collection_bonus)
+        penalty_reasons: List[str] = []
+        source_key = _normalize_text(candidate["source_concept"])
+        exclusions = _PHENOTYPE_PRIMARY_EXCLUSIONS.get(source_key, ())
+        if exclusions and any(exclusion in core_name for exclusion in exclusions):
+            explicitly_named = bool(candidate["explicit"] and (exact_name or exact_alias))
+            if not explicitly_named:
+                relevance_score -= 0.75
+                penalty_reasons.append(
+                    "primary pathway definition is unrelated to the requested phenotype"
+                )
+        if match_type == "broader_semantic_association" and matched_field == "token-level semantic overlap":
+            relevance_score -= 0.08
+            penalty_reasons.append("weak token-only association")
+        relevance_score = max(0.0, relevance_score)
+
+        rationale = (
+            f"{match_type.replace('_', ' ')} for '{candidate['term']}' in the "
+            f"pathway {matched_field}; {collection} priority applied"
+        )
+        if penalty_reasons:
+            rationale += "; penalized because " + " and ".join(penalty_reasons)
+        result = {
+            "pathway_id": pathway_id,
+            "pathway_name": pathway_name,
+            "match_type": match_type,
+            "matched_term": candidate["term"],
+            "source_concept": candidate["source_concept"],
+            "relevance_score": round(relevance_score, 3),
+            "collection": collection,
+            "rationale": rationale,
+            "_match_priority": _MATCH_PRIORITY[match_type],
+            "_collection_priority": _COLLECTION_PRIORITY[collection],
+        }
+        if best is None or (
+            result["_match_priority"],
+            result["relevance_score"],
+            result["_collection_priority"],
+        ) > (
+            best["_match_priority"],
+            best["relevance_score"],
+            best["_collection_priority"],
+        ):
+            best = result
+
+    if best is None:
+        return None
+    best["matched_terms"] = list(dict.fromkeys(matched_terms))
+    return best
+
+
 def compact_pathway_selection(selection: Dict[str, Any], include_internal: bool = False) -> Dict[str, Any]:
     compact: Dict[str, Any] = {
         "enabled": bool(selection.get("enabled")),
@@ -233,6 +648,10 @@ def compact_pathway_selection(selection: Dict[str, Any], include_internal: bool 
         "miRNA_perturbation": selection.get("miRNA_perturbation"),
         "expected_target_effect_on_phenotype": selection.get("expected_target_effect_on_phenotype"),
         "query_terms": list(selection.get("query_terms") or []),
+        "minimum_relevance_score": float(
+            selection.get("minimum_relevance_score", _DEFAULT_MIN_RELEVANCE_SCORE)
+        ),
+        "available_collections": list(selection.get("available_collections") or []),
         "selected_pathways": list(selection.get("selected_pathways") or []),
         "n_selected_pathways": int(selection.get("n_selected_pathways") or 0),
         "n_selected_genes": int(selection.get("n_selected_genes") or 0),
@@ -267,6 +686,8 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
             "expected_target_effect_on_phenotype"
         ),
         "query_terms": [],
+        "minimum_relevance_score": _minimum_relevance_score(queryspec),
+        "available_collections": [],
         "selected_pathways": [],
         "n_selected_pathways": 0,
         "n_selected_genes": 0,
@@ -279,7 +700,8 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
     if not enabled:
         return selection
 
-    query_terms = _build_pathway_query_terms(queryspec)
+    query_candidates = _build_pathway_query_candidates(queryspec)
+    query_terms = [candidate["term"] for candidate in query_candidates]
     selection["query_terms"] = query_terms
 
     try:
@@ -293,60 +715,63 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
 
     pathway_id_col = _pick_column(pathways_df, ["pathway_id", "id", "term_id", "geneset_id"])
     pathway_name_col = _pick_column(pathways_df, ["pathway_name", "name", "term_name", "geneset_name"])
-    description_col = _pick_column(pathways_df, ["description"])
-    source_col = _pick_column(pathways_df, ["source"])
-    category_col = _pick_column(pathways_df, ["category"])
+    description_cols = [
+        str(col) for col in pathways_df.columns
+        if str(col).strip().lower() in {"description", "pathway_desc", "definition", "summary"}
+    ]
+    alias_cols = [
+        str(col) for col in pathways_df.columns
+        if str(col).strip().lower() in {"alias", "aliases", "synonym", "synonyms"}
+    ]
 
     if pathway_name_col is None:
         selection["warnings"].append("Could not find a pathway name column in pathways data.")
         return selection
 
-    scored_matches: List[Dict[str, Any]] = []
-    direct_sources = (
-        list((queryspec.get("pathway_selection_request") or {}).get("query_terms") or [])
-        + list(queryspec.get("phenotype_keywords") or [])
-        + list(queryspec.get("pathway_keywords") or [])
+    available_collections = {
+        _infer_collection(
+            row,
+            _clean_scalar(row.get(pathway_name_col)),
+            _clean_scalar(row.get(pathway_id_col)) if pathway_id_col else "",
+        )
+        for _, row in pathways_df.iterrows()
+    }
+    available_collections.discard("Unknown")
+    selection["available_collections"] = sorted(
+        available_collections,
+        key=lambda collection: (-_COLLECTION_PRIORITY[collection], collection),
     )
-    direct_normalized = {_normalize_text(term) for term in direct_sources if _normalize_text(term)}
+    if available_collections == {"Hallmark"}:
+        selection["warnings"].append(
+            "The pathway database contains only Hallmark sets; specific phenotype filtering "
+            "requires GO Biological Process and curated pathway collections."
+        )
 
+    minimum_score = selection["minimum_relevance_score"]
+    scored_matches: List[Dict[str, Any]] = []
     for _, row in pathways_df.iterrows():
-        # Every scalar metadata field is searchable: aliases, collections,
-        # descriptions, identifiers, and future columns need no schema changes.
-        searchable_parts = list(row.to_dict().values())
-        searchable_normalized = _normalize_text(" | ".join(str(part) for part in searchable_parts))
-        searchable_tokens = set(searchable_normalized.split())
-
-        matched_terms = []
-        score = 0
-        for term in query_terms:
-            term_normalized = _normalize_text(term)
-            term_tokens = term_normalized.split()
-            if not term_tokens:
-                continue
-            phrase_match = term_normalized in searchable_normalized
-            token_matches = sum(token in searchable_tokens for token in term_tokens)
-            if phrase_match or token_matches == len(term_tokens) or (
-                len(term_tokens) > 1 and token_matches >= 2
-            ):
-                matched_terms.append(term)
-                direct_bonus = 100 if term_normalized in direct_normalized else 0
-                score += direct_bonus + (30 if phrase_match else 0) + token_matches * 3 + len(term_tokens)
-
-        if matched_terms:
-            scored_matches.append(
-                {
-                    "pathway_id": str(row.get(pathway_id_col) or row.get(pathway_name_col)),
-                    "pathway_name": str(row.get(pathway_name_col) or ""),
-                    "matched_terms": list(dict.fromkeys(matched_terms)),
-                    "_score": score,
-                }
-            )
+        match = _score_pathway_row(
+            row,
+            pathway_id_col=pathway_id_col,
+            pathway_name_col=pathway_name_col,
+            description_cols=description_cols,
+            alias_cols=alias_cols,
+            candidates=query_candidates,
+        )
+        if match is not None and match["relevance_score"] >= minimum_score:
+            scored_matches.append(match)
 
     scored_matches.sort(
-        key=lambda item: (-item["_score"], item["pathway_name"].lower(), item["pathway_id"].lower())
+        key=lambda item: (
+            -item["_match_priority"],
+            -item["relevance_score"],
+            -item["_collection_priority"],
+            item["pathway_name"].lower(),
+            item["pathway_id"].lower(),
+        )
     )
 
-    selected_pathways = []
+    selected_pathways: List[Dict[str, Any]] = []
     seen_pairs = set()
     for item in scored_matches:
         key = (item["pathway_id"], item["pathway_name"])
@@ -355,9 +780,9 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
         seen_pairs.add(key)
         selected_pathways.append(
             {
-                "pathway_id": item["pathway_id"],
-                "pathway_name": item["pathway_name"],
-                "matched_terms": item["matched_terms"],
+                key: value
+                for key, value in item.items()
+                if not key.startswith("_")
             }
         )
 
@@ -365,7 +790,10 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
     selection["n_selected_pathways"] = len(selected_pathways)
 
     if not selected_pathways:
-        selection["warnings"].append("No matching pathways were found for the requested phenotype/pathway terms.")
+        selection["warnings"].append(
+            "No pathways met the minimum biological relevance threshold for the requested "
+            "phenotype/pathway terms."
+        )
         return selection
 
     gene_pathway_id_col = _pick_column(gene_to_pathways_df, ["pathway_id", "id", "term_id", "geneset_id"])

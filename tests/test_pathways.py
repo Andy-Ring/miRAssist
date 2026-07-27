@@ -676,5 +676,158 @@ class PlannerNormalizationTests(unittest.TestCase):
             "HALLMARK_ANGIOGENESIS",
         })
         self.assertGreater(selection["n_selected_genes"], 0)
+
+class PhenotypePathwayRelevanceRegressionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.pathways = pd.DataFrame(
+            [
+                {"pathway_id": "GO:1", "pathway_name": "Cell Migration", "description": "", "collection": "GO Biological Process"},
+                {"pathway_id": "GO:2", "pathway_name": "Regulation of Cell Migration", "description": "", "collection": "GO Biological Process"},
+                {"pathway_id": "GO:3", "pathway_name": "Cell Motility", "description": "", "collection": "GO Biological Process"},
+                {"pathway_id": "GO:4", "pathway_name": "Chemotaxis", "description": "", "collection": "GO Biological Process"},
+                {"pathway_id": "R:1", "pathway_name": "Focal Adhesion", "description": "", "collection": "Reactome"},
+                {"pathway_id": "R:2", "pathway_name": "Extracellular Matrix Organization", "description": "", "collection": "Reactome"},
+                {"pathway_id": "R:3", "pathway_name": "Integrin Signaling", "description": "", "collection": "Reactome"},
+                {"pathway_id": "WP:1", "pathway_name": "Regulation of Actin Cytoskeleton", "description": "", "collection": "WikiPathways"},
+                {"pathway_id": "H:EMT", "pathway_name": "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", "description": "", "collection": "Hallmark"},
+                {
+                    "pathway_id": "H:ADIPO",
+                    "pathway_name": "HALLMARK_ADIPOGENESIS",
+                    "description": "Adipocyte differentiation with indirect cell migration associations.",
+                    "collection": "Hallmark",
+                },
+                {
+                    "pathway_id": "H:XENO",
+                    "pathway_name": "HALLMARK_XENOBIOTIC_METABOLISM",
+                    "description": "Drug detoxification with indirect cell migration associations.",
+                    "collection": "Hallmark",
+                },
+                {
+                    "pathway_id": "LOW:1",
+                    "pathway_name": "GENERAL_CELLULAR_SIGNALING",
+                    "description": "",
+                    "aliases": "migration network",
+                    "collection": "Other curated",
+                },
+            ]
+        )
+        self.genes = pd.DataFrame(
+            [
+                {
+                    "gene_symbol": f"GENE{index}",
+                    "pathway_id": row["pathway_id"],
+                    "pathway_name": row["pathway_name"],
+                }
+                for index, row in self.pathways.iterrows()
+            ]
+        )
+
+    def _migration_queryspec(self) -> dict:
+        qs = _validate_and_fill(
+            {"mode": "mirna_to_targets", "mirna": "miRNA-93"},
+            "What are the targets of miRNA-93 that relate to cell migration?",
+        )
+        # A legacy minimum count must not cause padding below the relevance threshold.
+        qs["pathway_filter"]["min_gene_sets"] = 25
+        return qs
+
+    def test_cell_migration_selects_only_controlled_relevant_pathways(self) -> None:
+        with patch("backend.pathways.load_pathways", return_value=self.pathways), patch(
+            "backend.pathways.load_gene_to_pathways", return_value=self.genes
+        ):
+            selection = resolve_pathway_selection(self._migration_queryspec())
+
+        selected_names = {
+            item["pathway_name"] for item in selection["selected_pathways"]
+        }
+        expected = {
+            "Cell Migration",
+            "Regulation of Cell Migration",
+            "Cell Motility",
+            "Chemotaxis",
+            "Focal Adhesion",
+            "Extracellular Matrix Organization",
+            "Integrin Signaling",
+            "Regulation of Actin Cytoskeleton",
+            "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION",
+        }
+        self.assertEqual(selected_names, expected)
+        self.assertNotIn("HALLMARK_ADIPOGENESIS", selected_names)
+        self.assertNotIn("HALLMARK_XENOBIOTIC_METABOLISM", selected_names)
+        self.assertNotIn("GENERAL_CELLULAR_SIGNALING", selected_names)
+        self.assertEqual(selection["n_selected_pathways"], len(expected))
+
+        required_metadata = {
+            "match_type",
+            "matched_term",
+            "source_concept",
+            "relevance_score",
+            "collection",
+            "rationale",
+        }
+        for pathway in selection["selected_pathways"]:
+            self.assertTrue(required_metadata.issubset(pathway))
+            self.assertGreaterEqual(
+                pathway["relevance_score"], selection["minimum_relevance_score"]
+            )
+
+    def test_explicit_pathway_name_bypasses_phenotype_exclusion(self) -> None:
+        qs = _base_queryspec()
+        qs["phenotype_context"]["phenotype"] = None
+        qs["phenotype_keywords"] = []
+        qs["pathway_keywords"] = ["HALLMARK_XENOBIOTIC_METABOLISM"]
+        qs["pathway_selection_request"]["query_terms"] = [
+            "HALLMARK_XENOBIOTIC_METABOLISM"
+        ]
+        qs["pathway_selection_request"]["directional_query_terms"] = []
+        with patch("backend.pathways.load_pathways", return_value=self.pathways), patch(
+            "backend.pathways.load_gene_to_pathways", return_value=self.genes
+        ):
+            selection = resolve_pathway_selection(qs)
+
+        self.assertEqual(selection["n_selected_pathways"], 1)
+        self.assertEqual(
+            selection["selected_pathways"][0]["pathway_name"],
+            "HALLMARK_XENOBIOTIC_METABOLISM",
+        )
+        self.assertEqual(
+            selection["selected_pathways"][0]["match_type"],
+            "exact_normalized_name_match",
+        )
+
+    def test_observed_query_uses_real_migration_collections_without_false_positives(self) -> None:
+        qs = _validate_and_fill(
+            {"mode": "mirna_to_targets", "mirna": "miRNA-93"},
+            "What are the targets of miRNA-93 that relate to cell migration?",
+        )
+        selection = resolve_pathway_selection(qs)
+        selected_names = {
+            item["pathway_name"] for item in selection["selected_pathways"]
+        }
+        normalized_names = {name.lower().replace("_", " ") for name in selected_names}
+
+        self.assertIn(
+            "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION", selected_names
+        )
+        self.assertNotIn("HALLMARK_ADIPOGENESIS", selected_names)
+        self.assertNotIn("HALLMARK_XENOBIOTIC_METABOLISM", selected_names)
+        for expected_term in (
+            "migration", "motility", "focal adhesion", "extracellular matrix",
+            "integrin", "actin cytoskeleton",
+        ):
+            self.assertTrue(
+                any(expected_term in name for name in normalized_names),
+                msg=f"Expected a selected pathway related to {expected_term}",
+            )
+
+    def test_bundled_database_includes_prioritized_collections(self) -> None:
+        collections = set(load_pathways(force_reload=True)["collection"].dropna())
+        self.assertTrue(
+            {"GO Biological Process", "Reactome", "WikiPathways", "Hallmark"}.issubset(
+                collections
+            )
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
