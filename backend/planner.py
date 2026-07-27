@@ -129,6 +129,18 @@ _PHENOTYPE_PATTERNS = [
     (re.compile(r"\b(emt|epithelial[- ]mesenchymal transition)\b", re.IGNORECASE), "EMT"),
     (re.compile(r"\b(energy metabolism|metabolism|metabolic reprogramming)\b", re.IGNORECASE), "energy metabolism"),
 ]
+_PHENOTYPE_CONCEPT_PATTERNS = [
+    (re.compile(r"\bcell\s+invasion\b|\binvasive\b|\binvasion\b", re.IGNORECASE), "cell invasion"),
+    (re.compile(r"\bcell\s+migration\b|\bmigration\b", re.IGNORECASE), "cell migration"),
+    (re.compile(r"\bcell\s+motility\b|\bmotility\b", re.IGNORECASE), "cell motility"),
+    (re.compile(r"\bcell\s+proliferation\b|\bproliferation\b", re.IGNORECASE), "cell proliferation"),
+    (re.compile(r"\bcell\s+survival\b|\bsurvival\b", re.IGNORECASE), "cell survival"),
+    (re.compile(r"\bangiogenesis\b", re.IGNORECASE), "angiogenesis"),
+    (re.compile(r"\bmetastasis\b|\bmetastatic\b", re.IGNORECASE), "metastasis"),
+    (re.compile(r"\bapoptosis\b|\bapoptotic\b", re.IGNORECASE), "apoptosis"),
+    (re.compile(r"\bemt\b|\bepithelial[- ]mesenchymal transition\b", re.IGNORECASE), "EMT"),
+    (re.compile(r"\benergy metabolism\b|\bmetabolic reprogramming\b|\bmetabolism\b", re.IGNORECASE), "energy metabolism"),
+]
 _MIRNA_TEXT_RE = re.compile(r"\b(?:miR(?:NA)?s?|microRNAs?)\b", re.IGNORECASE)
 _MIRNA_TOKEN_RE = re.compile(r"\b(?:hsa[-_\s]*)?(?:miR(?:NA)?|microRNA)[-_\s]*\d+[A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*(?:[-_](?:3p|5p))?\b", re.IGNORECASE)
 _GENE_TO_MIRNA_PATTERNS = [
@@ -335,6 +347,19 @@ def _infer_phenotype_name(text: str) -> Optional[str]:
             return phenotype
     return None
 
+
+def extract_phenotype_keywords(question: str, phenotype: Any = None) -> List[str]:
+    """Return ordered, distinct biological concepts mentioned in a question."""
+    concepts: List[str] = []
+    for pattern, concept in _PHENOTYPE_CONCEPT_PATTERNS:
+        if pattern.search(str(question or "")) and concept not in concepts:
+            concepts.append(concept)
+    canonical = str(phenotype or "").strip()
+    if canonical:
+        canonical = {"migration": "cell migration", "invasion": "cell invasion", "proliferation": "cell proliferation"}.get(canonical.lower(), canonical)
+        if canonical not in concepts:
+            concepts.insert(0, canonical)
+    return concepts
 
 def _looks_like_mirna_query_text(question: str) -> bool:
     return bool(_MIRNA_TOKEN_RE.search(str(question or "")))
@@ -618,6 +643,12 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
     qs["phenotype_context"].setdefault("raw_phrase", None)
     qs["phenotype_context"] = _enrich_phenotype_context(question, qs["phenotype_context"])
     qs["target_role_inference"] = infer_expected_target_role(qs["phenotype_context"])
+    extracted_keywords = extract_phenotype_keywords(question, qs["phenotype_context"].get("phenotype"))
+    existing_keywords = [str(term).strip() for term in (qs.get("phenotype_keywords") or []) if str(term).strip()]
+    qs["phenotype_keywords"] = list(dict.fromkeys(extracted_keywords + existing_keywords))
+    existing_pathway_keywords = [str(term).strip() for term in (qs.get("pathway_keywords") or []) if str(term).strip()]
+    qs["pathway_keywords"] = list(dict.fromkeys(existing_pathway_keywords))
+    direct_terms = qs["phenotype_keywords"] + qs["pathway_keywords"] + [str(term).strip() for term in (qs.get("pathway_selection_request", {}).get("query_terms") or []) if str(term).strip()]
     qs.setdefault(
         "pathway_selection_request",
         {"enabled": False, "query_terms": [], "directional_query_terms": [], "strict": False},
@@ -713,6 +744,7 @@ def _validate_and_fill(qs: Dict[str, Any], question: str) -> Dict[str, Any]:
         or qs["phenotype_context"].get("phenotype")
     )
     qs["pathway_selection_request"]["enabled"] = pathway_enabled
+    qs["pathway_selection_request"]["query_terms"] = list(dict.fromkeys([str(term).strip() for term in direct_terms if str(term).strip()]))
     qs["pathway_selection_request"]["strict"] = pathway_enabled
     qs["pathway_filter"]["enabled"] = pathway_enabled
     qs["pathway_filter"]["mode"] = "filter"

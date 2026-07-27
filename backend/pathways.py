@@ -42,6 +42,16 @@ _PHENOTYPE_SYNONYMS: Dict[str, List[str]] = {
         "apoptosis",
         "apoptotic process",
     ],
+    "cell invasion": ["cell invasion", "cell motility", "epithelial mesenchymal transition", "EMT", "focal adhesion", "extracellular matrix organization", "ECM receptor interaction", "regulation of actin cytoskeleton", "integrin signaling", "cell adhesion", "cell junction organization", "matrix metalloproteinase"],
+    "invasion": ["cell invasion", "cell motility", "epithelial mesenchymal transition", "EMT", "focal adhesion", "extracellular matrix organization", "ECM receptor interaction", "regulation of actin cytoskeleton", "integrin signaling", "cell adhesion", "cell junction organization", "matrix metalloproteinase"],
+    "cell migration": ["cell migration", "cell motility", "epithelial mesenchymal transition", "EMT", "focal adhesion", "extracellular matrix organization", "ECM receptor interaction", "regulation of actin cytoskeleton", "integrin signaling", "cell adhesion", "cell junction organization", "matrix metalloproteinase"],
+    "migration": ["cell migration", "cell motility", "epithelial mesenchymal transition", "EMT", "focal adhesion", "extracellular matrix organization", "ECM receptor interaction", "regulation of actin cytoskeleton", "integrin signaling", "cell adhesion", "cell junction organization", "matrix metalloproteinase"],
+    "cell proliferation": ["cell proliferation", "cell cycle", "growth factor signaling", "survival signaling"],
+    "proliferation": ["cell proliferation", "cell cycle", "growth factor signaling", "survival signaling"],
+    "cell survival": ["cell survival", "survival signaling", "anti apoptotic", "PI3K AKT signaling"],
+    "survival": ["cell survival", "survival signaling", "anti apoptotic", "PI3K AKT signaling"],
+    "angiogenesis": ["angiogenesis", "vascular endothelial growth factor", "VEGF signaling", "blood vessel development"],
+    "metastasis": ["metastasis", "cell migration", "cell invasion", "EMT", "focal adhesion", "extracellular matrix organization"],
 }
 
 
@@ -178,12 +188,14 @@ def _build_pathway_query_terms(queryspec: Dict[str, Any]) -> List[str]:
         target_role_inference.get("expected_target_effect_on_phenotype") or ""
     ).strip().lower()
 
-    if raw_phrase:
-        terms.append(raw_phrase)
+    # The original question/raw phrase is intentionally not a pathway term.
+    # Search concise concepts first, then controlled expansions.
     if phenotype:
         terms.append(phenotype)
 
-    synonym_terms = _PHENOTYPE_SYNONYMS.get(phenotype.lower(), [])
+    synonym_terms = []
+    for concept in list(queryspec.get("phenotype_keywords") or []) + [phenotype]:
+        synonym_terms.extend(_PHENOTYPE_SYNONYMS.get(str(concept).strip().lower(), []))
     terms.extend(synonym_terms)
     terms.extend(build_directional_query_terms(phenotype, expected_target_role))
 
@@ -290,31 +302,42 @@ def resolve_pathway_selection(queryspec: Dict[str, Any]) -> Dict[str, Any]:
         return selection
 
     scored_matches: List[Dict[str, Any]] = []
+    direct_sources = (
+        list((queryspec.get("pathway_selection_request") or {}).get("query_terms") or [])
+        + list(queryspec.get("phenotype_keywords") or [])
+        + list(queryspec.get("pathway_keywords") or [])
+    )
+    direct_normalized = {_normalize_text(term) for term in direct_sources if _normalize_text(term)}
+
     for _, row in pathways_df.iterrows():
-        searchable_parts = [
-            row.get(pathway_name_col),
-            row.get(description_col) if description_col else None,
-            row.get(source_col) if source_col else None,
-            row.get(category_col) if category_col else None,
-            row.get(pathway_id_col) if pathway_id_col else None,
-        ]
-        searchable_text = " | ".join(str(part or "") for part in searchable_parts)
-        searchable_normalized = _normalize_text(searchable_text)
+        # Every scalar metadata field is searchable: aliases, collections,
+        # descriptions, identifiers, and future columns need no schema changes.
+        searchable_parts = list(row.to_dict().values())
+        searchable_normalized = _normalize_text(" | ".join(str(part) for part in searchable_parts))
+        searchable_tokens = set(searchable_normalized.split())
 
         matched_terms = []
         score = 0
         for term in query_terms:
             term_normalized = _normalize_text(term)
-            if term_normalized and term_normalized in searchable_normalized:
+            term_tokens = term_normalized.split()
+            if not term_tokens:
+                continue
+            phrase_match = term_normalized in searchable_normalized
+            token_matches = sum(token in searchable_tokens for token in term_tokens)
+            if phrase_match or token_matches == len(term_tokens) or (
+                len(term_tokens) > 1 and token_matches >= 2
+            ):
                 matched_terms.append(term)
-                score += max(1, len(term_normalized.split()))
+                direct_bonus = 100 if term_normalized in direct_normalized else 0
+                score += direct_bonus + (30 if phrase_match else 0) + token_matches * 3 + len(term_tokens)
 
         if matched_terms:
             scored_matches.append(
                 {
                     "pathway_id": str(row.get(pathway_id_col) or row.get(pathway_name_col)),
                     "pathway_name": str(row.get(pathway_name_col) or ""),
-                    "matched_terms": matched_terms,
+                    "matched_terms": list(dict.fromkeys(matched_terms)),
                     "_score": score,
                 }
             )

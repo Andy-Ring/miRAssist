@@ -610,5 +610,71 @@ class PlannerNormalizationTests(unittest.TestCase):
         self.assertTrue(qs["optional_clarifications"])
 
 
+    def test_coordinated_phenotypes_are_preserved_by_deterministic_parser(self) -> None:
+        cases = {
+            "cell invasion and migration": {"cell invasion", "cell migration"},
+            "cell proliferation and survival": {"cell proliferation", "cell survival"},
+            "angiogenesis and metastasis": {"angiogenesis", "metastasis"},
+            "apoptosis": {"apoptosis"},
+        }
+        for phrase, expected in cases.items():
+            with self.subTest(phrase=phrase):
+                qs = _validate_and_fill(
+                    {"mode": "mirna_to_targets", "mirna": "miR-X"},
+                    f"What are the targets of miR-X related to {phrase}?",
+                )
+                self.assertTrue(expected.issubset(set(qs["phenotype_keywords"])))
+                self.assertTrue(expected.issubset(set(qs["pathway_selection_request"]["query_terms"])))
+
+    def test_explicit_pathway_metadata_term_is_selected(self) -> None:
+        qs = _base_queryspec()
+        qs["phenotype_context"]["phenotype"] = None
+        qs["phenotype_keywords"] = []
+        qs["pathway_keywords"] = ["PI3K AKT"]
+        qs["pathway_selection_request"]["query_terms"] = ["PI3K AKT"]
+        pathways = pd.DataFrame([{
+            "pathway_id": "P1", "pathway_name": "SIGNALING_SET",
+            "description": "curated pathway", "aliases": "PI3K-AKT",
+            "collection_name": "Hallmark signaling",
+        }])
+        genes = pd.DataFrame([{"gene_symbol": "AKT1", "pathway_id": "P1", "pathway_name": "SIGNALING_SET"}])
+        with patch("backend.pathways.load_pathways", return_value=pathways), patch(
+            "backend.pathways.load_gene_to_pathways", return_value=genes
+        ):
+            selection = resolve_pathway_selection(qs)
+        self.assertEqual(selection["n_selected_pathways"], 1)
+        self.assertEqual(selection["n_selected_genes"], 1)
+
+    def test_unmatched_phenotype_keeps_strict_filter_and_warns(self) -> None:
+        qs = _validate_and_fill(
+            {"mode": "mirna_to_targets", "mirna": "miR-X"},
+            "What are the targets of miR-X related to an unknown cellular phenomenon?",
+        )
+        qs["phenotype_context"]["phenotype"] = "unknown cellular phenomenon"
+        qs["phenotype_keywords"] = ["unknown cellular phenomenon"]
+        qs["pathway_selection_request"]["query_terms"] = ["unknown cellular phenomenon"]
+        pathways = pd.DataFrame([{"pathway_id": "X", "pathway_name": "known pathway"}])
+        genes = pd.DataFrame([{"gene_symbol": "X1", "pathway_id": "X", "pathway_name": "known pathway"}])
+        with patch("backend.pathways.load_pathways", return_value=pathways), patch(
+            "backend.pathways.load_gene_to_pathways", return_value=genes
+        ):
+            selection = resolve_pathway_selection(qs)
+        self.assertTrue(selection["enabled"])
+        self.assertEqual(selection["mode"], "filter")
+        self.assertEqual(selection["n_selected_pathways"], 0)
+        self.assertTrue(selection["warnings"])
+
+    def test_real_pathways_select_invasion_migration_pathway_and_genes(self) -> None:
+        qs = _validate_and_fill(
+            {"mode": "mirna_to_targets", "mirna": "miRNA-93"},
+            "What are the targets of miRNA-93 that relate to cell invasion and migration?",
+        )
+        selection = resolve_pathway_selection(qs)
+        names = {item["pathway_name"] for item in selection["selected_pathways"]}
+        self.assertTrue(names & {
+            "HALLMARK_EPITHELIAL_MESENCHYMAL_TRANSITION",
+            "HALLMARK_ANGIOGENESIS",
+        })
+        self.assertGreater(selection["n_selected_genes"], 0)
 if __name__ == "__main__":
     unittest.main()
