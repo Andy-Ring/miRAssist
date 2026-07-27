@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import logging
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -14,6 +15,12 @@ from backend.planner import build_directional_query_terms
 PATHWAYS_DIR = ROOT_DIR / "data" / "processed" / "pathways"
 DEFAULT_PATHWAYS_PATH = PATHWAYS_DIR / "pathways.parquet"
 DEFAULT_GENE_TO_PATHWAYS_PATH = PATHWAYS_DIR / "gene_to_pathways.parquet"
+DEFAULT_PATHWAYS_CSV_GZ_PATH = PATHWAYS_DIR / "pathways.csv.gz"
+DEFAULT_PATHWAYS_CSV_PATH = PATHWAYS_DIR / "pathways.csv"
+DEFAULT_GENE_TO_PATHWAYS_CSV_GZ_PATH = PATHWAYS_DIR / "gene_to_pathways.csv.gz"
+DEFAULT_GENE_TO_PATHWAYS_CSV_PATH = PATHWAYS_DIR / "gene_to_pathways.csv"
+
+logger = logging.getLogger(__name__)
 
 _PATHWAYS_CACHE: Optional[pd.DataFrame] = None
 _PATHWAYS_SOURCE: Optional[str] = None
@@ -44,16 +51,66 @@ def _normalize_text(value: Any) -> str:
     return " ".join(text.split())
 
 
+def _parquet_fallback_enabled() -> bool:
+    return (os.getenv("MIRASSIST_ENABLE_PARQUET_FALLBACK", "") or "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def _resolve_lookup_path(env_name: str, csv_gz_path: Path, csv_path: Path, parquet_path: Path) -> Path:
+    configured = os.getenv(env_name)
+    if configured:
+        path = Path(configured).expanduser().resolve()
+        if path.suffix.lower() == ".parquet" and not _parquet_fallback_enabled():
+            raise RuntimeError(
+                f"{env_name} points to Parquet, but Parquet fallback is disabled. "
+                "Set MIRASSIST_ENABLE_PARQUET_FALLBACK=1 to enable it explicitly."
+            )
+        return path
+    for path in (csv_gz_path, csv_path):
+        if path.exists():
+            return path.resolve()
+    if _parquet_fallback_enabled() and parquet_path.exists():
+        return parquet_path.resolve()
+    raise FileNotFoundError(
+        f"No pathway lookup table found. Tried {csv_gz_path}, {csv_path}"
+        + (f", {parquet_path} (Parquet fallback enabled)" if _parquet_fallback_enabled() else "")
+    )
+
+
 def _resolve_pathways_path() -> Path:
-    return Path(
-        os.getenv("MIRASSIST_PATHWAYS_PATH", str(DEFAULT_PATHWAYS_PATH))
-    ).expanduser().resolve()
+    return _resolve_lookup_path(
+        "MIRASSIST_PATHWAYS_PATH",
+        DEFAULT_PATHWAYS_CSV_GZ_PATH,
+        DEFAULT_PATHWAYS_CSV_PATH,
+        DEFAULT_PATHWAYS_PATH,
+    )
 
 
 def _resolve_gene_to_pathways_path() -> Path:
-    return Path(
-        os.getenv("MIRASSIST_GENE_TO_PATHWAYS_PATH", str(DEFAULT_GENE_TO_PATHWAYS_PATH))
-    ).expanduser().resolve()
+    return _resolve_lookup_path(
+        "MIRASSIST_GENE_TO_PATHWAYS_PATH",
+        DEFAULT_GENE_TO_PATHWAYS_CSV_GZ_PATH,
+        DEFAULT_GENE_TO_PATHWAYS_CSV_PATH,
+        DEFAULT_GENE_TO_PATHWAYS_PATH,
+    )
+
+
+def _load_lookup_table(path: Path, table_name: str) -> pd.DataFrame:
+    file_type = "csv.gz" if path.name.lower().endswith(".csv.gz") else path.suffix.lower().lstrip(".")
+    if file_type == "parquet":
+        if not _parquet_fallback_enabled():
+            raise RuntimeError(f"{table_name} resolved to Parquet while Parquet fallback is disabled.")
+        df = pd.read_parquet(path)
+    elif file_type in {"csv", "csv.gz"}:
+        df = pd.read_csv(path, compression="gzip" if file_type == "csv.gz" else None)
+    else:
+        raise ValueError(f"Unsupported {table_name} file type: {path}")
+    logger.info(
+        "Loaded %s: selected pathway file=%s file_type=%s rows=%d columns=%d status=success",
+        table_name, path, file_type, len(df), len(df.columns)
+    )
+    return df
 
 
 def load_pathways(force_reload: bool = False) -> pd.DataFrame:
@@ -64,7 +121,7 @@ def load_pathways(force_reload: bool = False) -> pd.DataFrame:
     if not force_reload and _PATHWAYS_CACHE is not None and _PATHWAYS_SOURCE == source:
         return _PATHWAYS_CACHE
 
-    df = pd.read_parquet(path)
+    df = _load_lookup_table(path, "pathways")
     _PATHWAYS_CACHE = df
     _PATHWAYS_SOURCE = source
     return df
@@ -82,7 +139,7 @@ def load_gene_to_pathways(force_reload: bool = False) -> pd.DataFrame:
     ):
         return _GENE_TO_PATHWAYS_CACHE
 
-    df = pd.read_parquet(path)
+    df = _load_lookup_table(path, "gene_to_pathways")
     _GENE_TO_PATHWAYS_CACHE = df
     _GENE_TO_PATHWAYS_SOURCE = source
     return df

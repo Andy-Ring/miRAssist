@@ -11,7 +11,12 @@ from backend.planner import (
     build_directional_query_terms,
     infer_expected_target_role,
 )
-from backend.pathways import compact_pathway_selection, resolve_pathway_selection
+from backend.pathways import (
+    compact_pathway_selection,
+    load_gene_to_pathways,
+    load_pathways,
+    resolve_pathway_selection,
+)
 from backend.retrieval import retrieve_from_queryspec
 from backend.worker import _apply_query_overrides
 
@@ -96,6 +101,71 @@ class PathwayResolverTests(unittest.TestCase):
                 {"gene_symbol": "NDUFA4", "pathway_id": "H:2", "pathway_name": "HALLMARK_OXIDATIVE_PHOSPHORYLATION"},
             ]
         )
+
+    def test_csv_gz_tables_match_parquet_sources_and_selection(self) -> None:
+        import os
+        from pandas.testing import assert_frame_equal
+
+        old_path = os.environ.pop("MIRASSIST_PATHWAYS_PATH", None)
+        old_gene_path = os.environ.pop("MIRASSIST_GENE_TO_PATHWAYS_PATH", None)
+        old_fallback = os.environ.pop("MIRASSIST_ENABLE_PARQUET_FALLBACK", None)
+        try:
+            csv_pathways = load_pathways(force_reload=True)
+            csv_gene_pathways = load_gene_to_pathways(force_reload=True)
+            os.environ["MIRASSIST_PATHWAYS_PATH"] = "data/processed/pathways/pathways.parquet"
+            os.environ["MIRASSIST_GENE_TO_PATHWAYS_PATH"] = "data/processed/pathways/gene_to_pathways.parquet"
+            os.environ["MIRASSIST_ENABLE_PARQUET_FALLBACK"] = "1"
+            parquet_pathways = load_pathways(force_reload=True)
+            parquet_gene_pathways = load_gene_to_pathways(force_reload=True)
+
+            self.assertEqual(csv_pathways.shape, parquet_pathways.shape)
+            self.assertEqual(csv_gene_pathways.shape, parquet_gene_pathways.shape)
+            self.assertListEqual(list(csv_pathways.columns), list(parquet_pathways.columns))
+            self.assertListEqual(list(csv_gene_pathways.columns), list(parquet_gene_pathways.columns))
+            assert_frame_equal(
+                csv_pathways.drop(columns=["genes"]),
+                parquet_pathways.drop(columns=["genes"]),
+                check_dtype=False,
+            )
+            assert_frame_equal(csv_gene_pathways, parquet_gene_pathways, check_dtype=False)
+
+            csv_selection = resolve_pathway_selection(_base_queryspec())
+            os.environ["MIRASSIST_PATHWAYS_PATH"] = "data/processed/pathways/pathways.parquet"
+            os.environ["MIRASSIST_GENE_TO_PATHWAYS_PATH"] = "data/processed/pathways/gene_to_pathways.parquet"
+            parquet_selection = resolve_pathway_selection(_base_queryspec())
+            self.assertEqual(csv_selection["selected_pathways"], parquet_selection["selected_pathways"])
+            self.assertEqual(csv_selection["_selected_gene_set"], parquet_selection["_selected_gene_set"])
+            self.assertEqual(csv_selection["_selected_gene_pathways"], parquet_selection["_selected_gene_pathways"])
+        finally:
+            for key, value in (
+                ("MIRASSIST_PATHWAYS_PATH", old_path),
+                ("MIRASSIST_GENE_TO_PATHWAYS_PATH", old_gene_path),
+                ("MIRASSIST_ENABLE_PARQUET_FALLBACK", old_fallback),
+            ):
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            load_pathways(force_reload=True)
+            load_gene_to_pathways(force_reload=True)
+
+    def test_parquet_fallback_requires_explicit_environment_flag(self) -> None:
+        import os
+
+        old_path = os.environ.get("MIRASSIST_PATHWAYS_PATH")
+        old_fallback = os.environ.pop("MIRASSIST_ENABLE_PARQUET_FALLBACK", None)
+        try:
+            os.environ["MIRASSIST_PATHWAYS_PATH"] = "data/processed/pathways/pathways.parquet"
+            with self.assertRaisesRegex(RuntimeError, "Parquet fallback is disabled"):
+                load_pathways(force_reload=True)
+        finally:
+            if old_path is None:
+                os.environ.pop("MIRASSIST_PATHWAYS_PATH", None)
+            else:
+                os.environ["MIRASSIST_PATHWAYS_PATH"] = old_path
+            if old_fallback is not None:
+                os.environ["MIRASSIST_ENABLE_PARQUET_FALLBACK"] = old_fallback
+            load_pathways(force_reload=True)
 
     def test_overexpression_increased_apoptosis_selects_negative_regulator_pathways(self) -> None:
         qs = _base_queryspec()
