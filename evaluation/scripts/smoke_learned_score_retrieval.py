@@ -48,7 +48,7 @@ def _assert_flag_parsing() -> None:
         assert actual is expected, "Flag parsing mismatch for {!r}: expected {}, got {}".format(raw_value, expected, actual)
 
     _set_env("MIRASSIST_LEARNED_SCORE_COLUMN", None)
-    assert get_learned_score_column() == "learned_score_xgb_raw_v1"
+    assert get_learned_score_column() == "mirassist_model_score"
     _set_env("MIRASSIST_LEARNED_SCORE_COLUMN", "custom_score")
     assert get_learned_score_column() == "custom_score"
 
@@ -58,78 +58,81 @@ def _assert_ranking_behavior() -> None:
         [
             {
                 "gene_symbol": "GENE_A",
+                "gene_symbol_normalized": "GENE_A",
                 "retrieval_score": 0.60,
-                "support_count": 3,
-                "mirdb_best_score": 80,
-                "ts_context_strength": 0.42,
-                "clip_exp_sum": 12,
-                "best_mfe": -24.0,
-                "learned_score_xgb_raw_v1": 0.40,
+                "overall_evidence_support_percentile": 80.0,
+                "evidence_family_count": 3,
+                "mirassist_model_score": 0.40,
+                "mirassist_model_version": "mirassist_rf_variant_a_v1",
+                "mirassist_xgboost_score": None,
             },
             {
                 "gene_symbol": "GENE_B",
+                "gene_symbol_normalized": "GENE_B",
                 "retrieval_score": 0.80,
-                "support_count": 2,
-                "mirdb_best_score": 70,
-                "ts_context_strength": 0.20,
-                "clip_exp_sum": 8,
-                "best_mfe": -20.0,
-                "learned_score_xgb_raw_v1": None,
+                "overall_evidence_support_percentile": 70.0,
+                "evidence_family_count": 2,
+                "mirassist_model_score": 0.30,
+                "mirassist_model_version": "mirassist_rf_variant_a_v1",
+                "mirassist_xgboost_score": None,
             },
             {
                 "gene_symbol": "GENE_C",
+                "gene_symbol_normalized": "GENE_C",
                 "retrieval_score": 0.50,
-                "support_count": 1,
-                "mirdb_best_score": 65,
-                "ts_context_strength": 0.10,
-                "clip_exp_sum": 5,
-                "best_mfe": -18.0,
-                "learned_score_xgb_raw_v1": 0.90,
+                "overall_evidence_support_percentile": 60.0,
+                "evidence_family_count": 1,
+                "mirassist_model_score": 0.90,
+                "mirassist_model_version": "mirassist_rf_variant_a_v1",
+                "mirassist_xgboost_score": None,
             },
         ]
     )
 
     ranked_df, diagnostics = apply_learned_score_ranking(
         df,
-        learned_score_column="learned_score_xgb_raw_v1",
+        learned_score_column="mirassist_model_score",
         enabled=True,
     )
     assert ranked_df["gene_symbol"].tolist() == ["GENE_C", "GENE_A", "GENE_B"]
-    assert ranked_df["retrieval_rank_score"].round(4).tolist() == [0.9, 0.4, 0.8]
-    assert ranked_df["learned_score_used"].tolist() == [1, 1, 0]
+    assert ranked_df["retrieval_rank_score"].round(4).tolist() == [0.9, 0.4, 0.3]
+    assert ranked_df["learned_score_used"].round(4).tolist() == [0.9, 0.4, 0.3]
+    assert ranked_df["mirassist_score"].round(4).tolist() == [0.9, 0.4, 0.3]
     assert diagnostics["learned_score_enabled"] is True
-    assert diagnostics["learned_score_present_count"] == 2
-    assert diagnostics["learned_score_missing_count"] == 1
+    assert diagnostics["active_score_source"] == "mirassist_model_score"
+    assert diagnostics["model_version"] == "mirassist_rf_variant_a_v1"
+    assert diagnostics["learned_score_present_count"] == 3
+    assert diagnostics["learned_score_missing_count"] == 0
 
     manual_df, manual_diagnostics = apply_learned_score_ranking(
         df,
-        learned_score_column="learned_score_xgb_raw_v1",
+        learned_score_column="mirassist_model_score",
         enabled=False,
     )
     assert manual_df["gene_symbol"].tolist() == ["GENE_B", "GENE_A", "GENE_C"]
     assert manual_diagnostics["retrieval_ranking_mode"] == "manual"
 
     missing_df, missing_diagnostics = apply_learned_score_ranking(
-        df.drop(columns=["learned_score_xgb_raw_v1"]),
-        learned_score_column="learned_score_xgb_raw_v1",
+        df.drop(columns=["mirassist_model_score", "mirassist_model_version", "mirassist_xgboost_score"]),
+        learned_score_column="mirassist_model_score",
         enabled=True,
     )
     assert missing_df["gene_symbol"].tolist() == ["GENE_B", "GENE_A", "GENE_C"]
     assert missing_diagnostics["learned_score_enabled"] is False
     assert missing_diagnostics.get("warnings")
 
-    sparse_df = pd.DataFrame(
-        [
-            {"gene_symbol": "GENE_X", "retrieval_score": 0.20, "learned_score_xgb_raw_v1": 0.50},
-            {"gene_symbol": "GENE_Y", "retrieval_score": 0.60, "learned_score_xgb_raw_v1": None},
-        ]
-    )
-    sparse_ranked_df, _ = apply_learned_score_ranking(
-        sparse_df,
-        learned_score_column="learned_score_xgb_raw_v1",
-        enabled=True,
-    )
-    assert sparse_ranked_df["gene_symbol"].tolist() == ["GENE_X", "GENE_Y"]
+    sparse_df = df.head(2).copy()
+    sparse_df.loc[sparse_df.index[1], "mirassist_model_score"] = None
+    try:
+        apply_learned_score_ranking(
+            sparse_df,
+            learned_score_column="mirassist_model_score",
+            enabled=True,
+        )
+    except ValueError as exc:
+        assert "missing" in str(exc).lower()
+    else:
+        raise AssertionError("Incomplete persisted model-score coverage was not rejected")
 
 
 def _assert_debug_truncation_and_json_safety() -> None:
@@ -178,7 +181,7 @@ def _assert_debug_truncation_and_json_safety() -> None:
 def _assert_postgres_query_builder() -> None:
     _set_env("MIRASSIST_DB_CANDIDATE_LIMIT", "500")
     _set_env("MIRASSIST_USE_LEARNED_SCORE", "1")
-    _set_env("MIRASSIST_LEARNED_SCORE_COLUMN", "learned_score_xgb_raw_v1")
+    _set_env("MIRASSIST_LEARNED_SCORE_COLUMN", "mirassist_model_score")
     cfg = RetrievalConfig(
         k_shortlist=10,
         min_support=2,
@@ -191,17 +194,20 @@ def _assert_postgres_query_builder() -> None:
         pathway_gene_map={},
     )
     available_columns = [
+        "evidence_row_id",
         "mirna_name",
         "gene_symbol",
-        "mirna_name_norm",
-        "gene_symbol_norm",
+        "mirna_name_normalized",
+        "gene_symbol_normalized",
+        "transcript_id",
         "support_count",
-        "retrieval_score",
-        "learned_score_xgb_raw_v1",
-        "mirdb_best_score",
-        "ts_context_strength",
-        "clip_exp_sum",
-        "best_mfe",
+        "overall_evidence_support_percentile",
+        "evidence_family_count",
+        "mirassist_model_score",
+        "mirassist_model_version",
+        "mirassist_score_rank_within_mirna",
+        "mirassist_score_percentile_within_mirna",
+        "mirassist_xgboost_score",
     ]
     query, params, selected_columns, diagnostics = build_postgres_candidate_query(
         "miR-210",
@@ -210,19 +216,21 @@ def _assert_postgres_query_builder() -> None:
         mirna_variants=expand_mirna_query_variants("miR-210")["primary_variants"],
     )
     assert "LIMIT :candidate_limit" in query
-    assert '"mirna_name_norm" IN (' in query
+    assert 'LOWER("mirna_name_normalized") IN (' in query
     assert params["candidate_limit"] == 500
     assert any(key.startswith("mirna_norm_") for key in params)
-    assert "learned_score_xgb_raw_v1" in selected_columns
+    assert "mirassist_model_score" in selected_columns
+    assert "mirassist_xgboost_score" in selected_columns
     assert diagnostics["evidence_backend"] == "postgres"
     assert diagnostics["sql_order_columns"] == [
-        '"learned_score_xgb_raw_v1" DESC NULLS LAST',
-        '"support_count" DESC NULLS LAST',
-        '"mirdb_best_score" DESC NULLS LAST',
-        '"ts_context_strength" DESC NULLS LAST',
-        '"clip_exp_sum" DESC NULLS LAST',
-        '"best_mfe" ASC NULLS LAST',
-        '"retrieval_score" DESC NULLS LAST',
+        '"mirassist_model_score" DESC NULLS LAST',
+        '"overall_evidence_support_percentile" DESC NULLS LAST',
+        '"evidence_family_count" DESC NULLS LAST',
+        '"mirassist_score_rank_within_mirna" ASC NULLS LAST',
+        '"mirna_name_normalized" ASC NULLS LAST',
+        '"gene_symbol_normalized" ASC NULLS LAST',
+        '"transcript_id" ASC NULLS LAST',
+        '"evidence_row_id" ASC NULLS LAST',
     ]
 
 

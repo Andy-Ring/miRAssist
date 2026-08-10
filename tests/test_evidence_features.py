@@ -83,24 +83,26 @@ class FeaturePercentileTests(unittest.TestCase):
         shortlist["BRCA_support_tcga"] = 1
         annotated = annotate_feature_percentiles(shortlist, self.ev)
 
-        cards = cards_from_dataframe(annotated, tcga="BRCA")
-        card = cards[0]
+        card = cards_from_dataframe(annotated, tcga="BRCA")[0]
 
-        self.assertTrue(any("miRDB score 100" in line for line in card["published_model_evidence"]))
-        self.assertTrue(any("TargetScan context++" in line for line in card["published_model_evidence"]))
-        self.assertTrue(any("CLIP signal 10" in line and "exceptional" in line for line in card["clip_binding_evidence"]))
+        self.assertFalse(card["primary_mirdb_evidence"])
+        self.assertTrue(any("TargetScan context score" in line for line in card["published_model_evidence"]))
+        self.assertTrue(any("CLIP max score 7.5" in line for line in card["clip_binding_evidence"]))
         self.assertTrue(any("Retained by strict pathway filter" in line for line in card["pathway_evidence"]))
         self.assertEqual(card["pathway_names"][0], "apoptosis")
-        self.assertIn("mirdb_best_score", card["raw_key_values"])
-        self.assertEqual(card["evidence_support_count"], 8)
-        self.assertIn("miRTarBase", card["evidence_categories_present"])
-        self.assertIn("TargetScan", card["evidence_categories_present"])
-        self.assertIn("Seed/site", card["evidence_categories_present"])
-        self.assertIn("RNAhybrid/structure", card["evidence_categories_present"])
-        self.assertEqual(card["primary_mirdb_evidence"], "miRDB score 100 (100th percentile; exceptional; very strong model support)")
-        self.assertEqual(card["primary_clip_evidence"], "CLIP signal 10 (100th percentile; exceptional)")
-        self.assertIn("TargetScan context++", card["primary_targetscan_evidence"])
-        self.assertNotIn("miRDB mean score", " ".join(card["published_model_evidence"]))
+        self.assertEqual(card["evidence_support_count"], 5)
+        self.assertEqual(
+            card["evidence_categories_present"],
+            [
+                "Sequence complementarity",
+                "Thermodynamic stability",
+                "Sequence conservation",
+                "Functional binding",
+                "Functional repression",
+            ],
+        )
+        self.assertIn("TargetScan context score", card["primary_targetscan_evidence"])
+        self.assertIn("CLIP max score", card["primary_clip_evidence"])
 
     def test_prompt_bundle_uses_required_headings(self) -> None:
         shortlist = self.ev.iloc[[4, 3]].copy()
@@ -150,34 +152,27 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertIn("Requested ranked results: 5", bundle["user_prompt"])
         self.assertIn("Available evidence cards: 2", bundle["user_prompt"])
         self.assertIn("Evidence support count", bundle["user_prompt"])
-        self.assertIn("Evidence categories:", bundle["user_prompt"])
+        self.assertIn("Evidence families:", bundle["user_prompt"])
         self.assertIn("Key pieces of evidence", bundle["system_prompt"])
         self.assertIn("Pathways:", bundle["user_prompt"])
         self.assertIn("Overall priority", bundle["system_prompt"])
         self.assertIn("breadth, not strength", bundle["system_prompt"])
         self.assertIn("Target-role interpretation:", bundle["user_prompt"])
         self.assertIn("deterministic pathway annotations", bundle["user_prompt"])
-        self.assertIn("you should decide the final ranking", bundle["system_prompt"])
-        self.assertNotIn("provided order", bundle["user_prompt"])
+        self.assertIn("Preserve the provided candidate order", bundle["system_prompt"])
+        self.assertIn("backend ranking order", bundle["user_prompt"])
 
     def test_evidence_support_count_uses_categories_not_percentiles(self) -> None:
         row = pd.Series(
             {
-                "mirtarbase_pos": 1,
-                "mirdb_best_score": 91.5,
-                "mirdb_best_score_percentile": 96.0,
-                "mirdb_best_score_label": "exceptional",
-                "ts_context_strength": 0.932,
-                "ts_context_strength_percentile": 100.0,
-                "ts_context_strength_label": "exceptional",
-                "n_clip_sites": 7,
-                "n_clip_sites_percentile": 99.0,
-                "n_clip_sites_label": "exceptional",
-                "clip_exp_sum": 25.0,
-                "clip_exp_sum_percentile": 98.0,
-                "clip_exp_sum_label": "exceptional",
-                "BRCA_spearman_rho": -0.014,
+                "n_seed_sites": 2,
+                "rnahybrid_mfe": -22.0,
+                "targetscan_context_score": -0.4,
+                "rnaplfold_best_seed_unpaired_prob": 0.8,
+                "clip_max_score": 9.0,
+                "BRCA_spearman_rho": -0.2,
                 "BRCA_support_tcga": 1,
+                "mirtarbase_known_positive": True,
                 "pathway_selected_gene": 1,
                 "pathway_selected_names": ["HALLMARK_OXIDATIVE_PHOSPHORYLATION"],
             }
@@ -188,43 +183,47 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertEqual(sections["evidence_support_count"], 6)
         self.assertEqual(
             sections["evidence_categories_present"],
-            ["miRTarBase", "miRDB", "TargetScan", "CLIP", "TCGA context", "Pathway"],
+            [
+                "Sequence complementarity",
+                "Thermodynamic stability",
+                "Sequence conservation",
+                "Target site accessibility",
+                "Functional binding",
+                "Functional repression",
+            ],
         )
+        self.assertNotIn("miRTarBase", sections["evidence_categories_present"])
+        self.assertNotIn("Pathway", sections["evidence_categories_present"])
 
     def test_clip_category_counts_once_even_with_multiple_metrics_and_percentiles(self) -> None:
         row = pd.Series(
             {
-                "n_clip_sites": 4,
-                "n_clip_sites_percentile": 95.0,
-                "n_clip_sites_label": "exceptional",
-                "clip_exp_sum": 20.0,
-                "clip_exp_sum_percentile": 97.0,
-                "clip_exp_sum_label": "exceptional",
-                "clip_exp_max": 10.0,
-                "clip_exp_max_percentile": 96.0,
-                "clip_exp_max_label": "exceptional",
+                "clip_max_score": 10.0,
+                "clip_max_score_percentile": 96.0,
+                "clip_n_experiments": 20.0,
+                "clip_n_experiments_percentile": 97.0,
+                "encori_clip_score": 5.0,
+                "encori_clip_score_percentile": 95.0,
             }
         )
 
         sections = build_evidence_sections(row)
         self.assertEqual(sections["evidence_support_count"], 1)
-        self.assertEqual(sections["evidence_categories_present"], ["CLIP"])
+        self.assertEqual(sections["evidence_categories_present"], ["Functional binding"])
 
     def test_targetscan_category_counts_once_even_with_multiple_fields(self) -> None:
         row = pd.Series(
             {
-                "ts_context_strength": 0.8,
-                "ts_context_strength_percentile": 93.0,
-                "ts_context_strength_label": "very high",
-                "ts_best_percentile": 98.0,
-                "ts_best_percentile_percentile": 90.0,
-                "ts_best_percentile_label": "very high",
+                "targetscan_context_score": -0.8,
+                "targetscan_context_score_support_percentile": 93.0,
+                "targetscan_aggregate_context_score": -1.2,
+                "targetscan_conserved_site": 1,
             }
         )
 
         sections = build_evidence_sections(row)
         self.assertEqual(sections["evidence_support_count"], 1)
-        self.assertEqual(sections["evidence_categories_present"], ["TargetScan"])
+        self.assertEqual(sections["evidence_categories_present"], ["Sequence conservation"])
 
     def test_format_percentile_uses_correct_ordinals(self) -> None:
         self.assertEqual(format_percentile(1), "1st percentile")
@@ -235,68 +234,60 @@ class FeaturePercentileTests(unittest.TestCase):
         self.assertEqual(format_percentile(21), "21st percentile")
         self.assertEqual(format_percentile(93), "93rd percentile")
 
-    def test_mirdb_primary_display_uses_best_score_only(self) -> None:
+    def test_legacy_mirdb_fields_do_not_create_variant_a_family(self) -> None:
         row = pd.Series(
             {
                 "mirdb_best_score": 91.5,
                 "mirdb_best_score_percentile": 84.0,
-                "mirdb_best_score_label": "high",
                 "mirdb_mean_score": 89.4,
-                "mirdb_mean_score_percentile": 80.0,
-                "mirdb_mean_score_label": "high",
             }
         )
 
         sections = build_evidence_sections(row)
-        self.assertEqual(
-            sections["primary_mirdb_evidence"],
-            "miRDB score 91.5 (84th percentile; high; very strong model support)",
-        )
-        self.assertEqual(len(sections["published_model_evidence"]), 1)
+        self.assertIsNone(sections["primary_mirdb_evidence"])
+        self.assertEqual(sections["published_model_evidence"], [])
+        self.assertEqual(sections["evidence_support_count"], 0)
 
-    def test_clip_primary_display_uses_clip_sum_over_clip_max(self) -> None:
+    def test_clip_primary_display_uses_approved_clip_fields(self) -> None:
         row = pd.Series(
             {
-                "clip_exp_sum": 25.0,
-                "clip_exp_sum_percentile": 98.0,
-                "clip_exp_sum_label": "exceptional",
-                "clip_exp_max": 11.0,
-                "clip_exp_max_percentile": 90.0,
-                "clip_exp_max_label": "very high",
-                "n_clip_sites": 7,
-                "n_clip_sites_percentile": 99.0,
-                "n_clip_sites_label": "exceptional",
+                "clip_max_score": 11.0,
+                "clip_max_score_percentile": 90.0,
+                "clip_n_experiments": 25.0,
+                "clip_n_experiments_percentile": 98.0,
             }
         )
 
         sections = build_evidence_sections(row)
         self.assertEqual(
             sections["primary_clip_evidence"],
-            "CLIP signal 25 (98th percentile; exceptional)",
+            "CLIP max score 11 (90th percentile; very high)",
         )
-        self.assertEqual(sections["clip_binding_evidence"], ["CLIP signal 25 (98th percentile; exceptional)"])
+        self.assertEqual(
+            sections["clip_binding_evidence"],
+            [
+                "CLIP max score 11 (90th percentile; very high)",
+                "CLIP-supported experiments 25 (98th percentile; exceptional)",
+            ],
+        )
 
-    def test_targetscan_primary_display_uses_context_strength(self) -> None:
+    def test_targetscan_primary_display_uses_context_score(self) -> None:
         row = pd.Series(
             {
-                "ts_best_contextpp": -0.932,
-                "ts_context_strength": 0.932,
-                "ts_context_strength_percentile": 100.0,
-                "ts_context_strength_label": "exceptional",
-                "ts_best_percentile": 99.0,
-                "ts_best_percentile_percentile": 100.0,
-                "ts_best_percentile_label": "exceptional",
+                "targetscan_context_score": -0.932,
+                "targetscan_context_score_support_percentile": 100.0,
+                "targetscan_aggregate_context_score": -1.2,
             }
         )
 
         sections = build_evidence_sections(row)
         self.assertEqual(
             sections["primary_targetscan_evidence"],
-            "TargetScan context++ -0.932 (100th percentile; exceptional; more negative is stronger)",
+            "TargetScan context score -0.932 (100th percentile; exceptional; more negative is stronger)",
         )
         self.assertEqual(
             sections["published_model_evidence"],
-            ["TargetScan context++ -0.932 (100th percentile; exceptional; more negative is stronger)"],
+            ["TargetScan context score -0.932 (100th percentile; exceptional; more negative is stronger)"],
         )
 
     def test_seed_site_zero_sites_not_presented_as_positive_key_evidence(self) -> None:
@@ -315,34 +306,36 @@ class FeaturePercentileTests(unittest.TestCase):
     def test_priority_fields_distinguish_breadth_and_strength(self) -> None:
         broad_but_weak = pd.Series(
             {
-                "mirdb_best_score": 60.0,
-                "mirdb_best_score_label": "typical",
-                "ts_context_strength": 0.1,
-                "ts_context_strength_label": "typical",
-                "clip_exp_sum": 4.0,
-                "clip_exp_sum_label": "typical",
-                "pathway_selected_gene": 1,
-                "pathway_selected_names": ["HALLMARK_GLYCOLYSIS"],
+                "sequence_complementarity_available": True,
+                "sequence_complementarity_support_percentile": 40.0,
+                "thermodynamic_stability_available": True,
+                "thermodynamic_stability_support_percentile": 40.0,
+                "sequence_conservation_available": True,
+                "sequence_conservation_support_percentile": 40.0,
+                "functional_binding_available": True,
+                "functional_binding_support_percentile": 40.0,
             }
         )
-        fewer_but_strong = pd.Series(
+        broad_and_strong = pd.Series(
             {
-                "mirdb_best_score": 95.0,
-                "mirdb_best_score_label": "exceptional",
-                "ts_context_strength": 0.93,
-                "ts_context_strength_label": "exceptional",
-                "clip_exp_sum": 25.0,
-                "clip_exp_sum_label": "exceptional",
+                "sequence_complementarity_available": True,
+                "sequence_complementarity_support_percentile": 90.0,
+                "thermodynamic_stability_available": True,
+                "thermodynamic_stability_support_percentile": 90.0,
+                "sequence_conservation_available": True,
+                "sequence_conservation_support_percentile": 90.0,
+                "functional_binding_available": True,
+                "functional_binding_support_percentile": 90.0,
             }
         )
 
         weak_sections = build_evidence_sections(broad_but_weak)
-        strong_sections = build_evidence_sections(fewer_but_strong)
+        strong_sections = build_evidence_sections(broad_and_strong)
 
         self.assertEqual(weak_sections["overall_priority_tier"], "Exploratory")
-        self.assertIn("broad support", weak_sections["evidence_strength_summary"])
+        self.assertIn("breadth or strength is limited", weak_sections["evidence_strength_summary"])
         self.assertEqual(strong_sections["overall_priority_tier"], "Strong")
-        self.assertIn("strong values", strong_sections["evidence_strength_summary"])
+        self.assertIn("broad support", strong_sections["evidence_strength_summary"])
 
 
 if __name__ == "__main__":

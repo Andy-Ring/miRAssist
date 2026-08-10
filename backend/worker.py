@@ -205,8 +205,9 @@ def run_query_job(
                     "n_final_shortlist": retrieval_diagnostics.get("n_final_shortlist"),
                     "n_rows_sent_to_synthesizer": retrieval_diagnostics.get("n_rows_sent_to_synthesizer"),
                     "disable_synthesis": synthesis_disabled,
-                    "learned_score_used": retrieval_diagnostics.get("learned_score_enabled"),
-                    "learned_score_column": retrieval_diagnostics.get("learned_score_column"),
+                    "mirassist_score_used": retrieval_diagnostics.get("learned_score_enabled"),
+                    "active_score_source": retrieval_diagnostics.get("active_score_source"),
+                    "model_version": retrieval_diagnostics.get("model_version"),
                 },
                 ensure_ascii=False,
             )
@@ -310,6 +311,12 @@ def run_query_job(
         prompt_bundle_debug = {
             "candidate_order_sent_to_llm": (bundle.get("meta") or {}).get("candidate_order_sent_to_llm", []),
             "cards_count": (bundle.get("meta") or {}).get("cards_count", len(cards)),
+            "model_version": retrieval_diagnostics.get("model_version"),
+            "candidate_universe_version": retrieval_diagnostics.get("candidate_universe_version"),
+            "active_score_source": retrieval_diagnostics.get("active_score_source"),
+            "score_semantics": retrieval_diagnostics.get("score_semantics"),
+            "candidate_count_returned": retrieval_diagnostics.get("candidate_count_returned", len(shortlist_records)),
+            "retrieval_filters": retrieval_diagnostics.get("retrieval_filters"),
         }
 
         persist(

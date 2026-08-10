@@ -39,9 +39,11 @@ How to interpret results:
 - More negative TargetScan context score means stronger sequence-conservation support.
 - More negative TCGA Spearman rho means stronger repression-consistent anticorrelation.
 - Overall priority considers both evidence breadth and evidence strength.
+- The miRAssist score is a relative prioritization score within the evidence-supported Variant A candidate universe. It is not a probability that an interaction is biologically true.
 
 Novel mode:
-- Novel mode excludes known curated interactions when that filter is available in the backend.
+- Novel mode excludes candidates aligned to the retained miRTarBase known-positive set.
+- Remaining candidates are not necessarily definitively novel or experimentally unvalidated.
 """.strip()
 
 

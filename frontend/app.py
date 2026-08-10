@@ -92,6 +92,8 @@ APP_AUTHOR = "Andy Ring"
 DEFAULT_UI_CANDIDATE_POOL = 10
 DEFAULT_UI_MIN_SUPPORT = 2
 CHART_SCORE_COLUMNS = [
+    "mirassist_score",
+    "mirassist_model_score",
     "mirassist_xgboost_score",
     "learned_score_used",
     "retrieval_rank_score",
@@ -488,10 +490,18 @@ def render_shortlist_chart(shortlist: list[dict]) -> None:
         support_text = ""
         if pd.notna(support):
             support_text = f" | support {int(float(support))}"
-        st.write(f"**{label}** | {score_column}: `{raw_score:.4f}`{support_text}")
+        score_label = "miRAssist score" if score_column in {
+            "mirassist_score", "mirassist_model_score", "mirassist_xgboost_score", "learned_score_used"
+        } else score_column
+        st.write(f"**{label}** | {score_label}: `{raw_score:.4f}`{support_text}")
         st.progress(normalized)
 
-    st.caption(f"Showing the top {len(chart_df)} retrieved candidates ranked by `{score_column}`.")
+    technical_score = (
+        "miRAssist random-forest score"
+        if score_column in {"mirassist_score", "mirassist_model_score"}
+        else "miRAssist score"
+    )
+    st.caption(f"Showing the top {len(chart_df)} retrieved candidates ranked by {technical_score}.")
 
 
 def run_direct_mode(submit_payload: dict) -> None:
@@ -569,8 +579,8 @@ with c1:
         "Novel mode",
         value=False,
         help=(
-            "If enabled, miRAssist will avoid labeling miRTarBase functional positives as 'novel'. "
-            "It may still mention known targets."
+            "If enabled, candidates aligned to the retained miRTarBase known-positive set are excluded. "
+            "Remaining candidates are not necessarily definitively novel or experimentally unvalidated."
         ),
     )
 
@@ -645,6 +655,10 @@ if result:
                 st.caption(
                     f"Retrieved candidates shown in backend order. Direction: `{normalize_direction_label(resolved_direction)}`."
                 )
+                st.caption(
+                    "The miRAssist score is a relative prioritization score within the evidence-supported "
+                    "Variant A candidate universe. It is not a probability that an interaction is biologically true."
+                )
                 st.markdown(dataframe_to_markdown_table(shortlist_df), unsafe_allow_html=False)
                 if len(shortlist_df) > 20:
                     st.caption(
@@ -688,14 +702,21 @@ if result:
                 "normalized_mirna_column": retrieval_diagnostics.get("sql_mirna_norm_column")
                 or retrieval_diagnostics.get("normalized_mirna_column_used"),
                 "normalized_gene_column": retrieval_diagnostics.get("sql_gene_norm_column"),
-                "sort_column_used": retrieval_diagnostics.get("score_column_used")
-                or retrieval_diagnostics.get("sort_column_used")
-                or retrieval_diagnostics.get("learned_score_column"),
-                "rows_returned": retrieval_diagnostics.get("n_rows_fetched_from_db")
+                "active_score_source": retrieval_diagnostics.get("active_score_source")
+                or retrieval_diagnostics.get("score_column_used")
+                or retrieval_diagnostics.get("sort_column_used"),
+                "model_version": retrieval_diagnostics.get("model_version"),
+                "candidate_universe_version": retrieval_diagnostics.get("candidate_universe_version"),
+                "schema_version": retrieval_diagnostics.get("schema_version"),
+                "score_semantics": retrieval_diagnostics.get("score_semantics"),
+                "candidate_count_returned": retrieval_diagnostics.get("candidate_count_returned"),
+                "rows_fetched": retrieval_diagnostics.get("n_rows_fetched_from_db")
                 or retrieval_diagnostics.get("n_after_query_filter"),
                 "columns_returned": retrieval_diagnostics.get("sql_returned_column_count")
                 or retrieval_diagnostics.get("sql_selected_column_count"),
+                "retrieval_filters": retrieval_diagnostics.get("retrieval_filters"),
                 "sql_order_columns": retrieval_diagnostics.get("sql_order_columns"),
+                "planner_structured_output": extract_queryspec(result),
             }
             st.code(json.dumps(debug_summary, indent=2, default=str), language="json")
             prompt_debug = result.get("prompt_bundle_debug") or {}

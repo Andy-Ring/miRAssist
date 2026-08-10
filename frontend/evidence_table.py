@@ -7,12 +7,15 @@ import pandas as pd
 
 
 EVIDENCE_SHORTLIST_COLUMNS = [
-    "rank",
+    "Filtered rank",
+    "Global rank within miRNA",
     "candidate",
     "mirna_name",
     "gene_symbol",
     "transcript_id",
-    "mirassist_xgboost_score",
+    "miRAssist score",
+    "Model version",
+    "Score percentile within miRNA",
     "overall_evidence_support_percentile",
     "evidence_family_count",
     "sequence_complementarity_support_percentile",
@@ -32,6 +35,22 @@ EVIDENCE_SHORTLIST_COLUMNS = [
     "tcga_mean_spearman_rho",
 ]
 
+_INTERNAL_EXPORT_COLUMNS = {
+    "rank",
+    "mirassist_score",
+    "mirassist_model_score",
+    "mirassist_model_version",
+    "mirassist_score_rank_within_mirna",
+    "mirassist_filtered_rank",
+    "mirassist_score_percentile_within_mirna",
+    "mirassist_xgboost_score",
+    "learned_score_used",
+    "retrieval_rank_score",
+    "_learned_score_missing",
+    "score_column_used",
+}
+
+
 
 def normalize_direction_label(direction: Any) -> str:
     value = str(direction or "").strip()
@@ -50,16 +69,30 @@ def build_evidence_shortlist_table(shortlist: list[dict], direction: Any) -> pd.
     if not isinstance(shortlist, list) or not shortlist:
         return pd.DataFrame(columns=EVIDENCE_SHORTLIST_COLUMNS)
 
-    df = pd.DataFrame(shortlist).copy()
-    if "rank" not in df.columns:
-        df.insert(0, "rank", range(1, len(df) + 1))
+    raw = pd.DataFrame(shortlist).copy()
+    df = raw.copy()
+    filtered_rank = raw.get("mirassist_filtered_rank", raw.get("rank"))
+    if filtered_rank is None:
+        filtered_rank = pd.Series(range(1, len(raw) + 1), index=raw.index)
+    df["Filtered rank"] = filtered_rank
+    df["Global rank within miRNA"] = raw.get("mirassist_score_rank_within_mirna")
+    score = raw.get("mirassist_model_score")
+    if score is None or pd.to_numeric(score, errors="coerce").notna().sum() == 0:
+        score = raw.get("mirassist_score", raw.get("mirassist_xgboost_score"))
+    df["miRAssist score"] = score
+    model_version = raw.get("mirassist_model_version")
+    if model_version is None:
+        model_version = pd.Series(["legacy_xgboost_unspecified"] * len(raw), index=raw.index)
+    df["Model version"] = model_version
+    df["Score percentile within miRNA"] = raw.get("mirassist_score_percentile_within_mirna")
 
     candidate_col = candidate_column_for_direction(direction)
     if candidate_col in df.columns and "candidate" not in df.columns:
-        df.insert(1, "candidate", df[candidate_col])
+        df.insert(2, "candidate", df[candidate_col])
     elif "candidate" not in df.columns:
-        df.insert(1, "candidate", "")
+        df.insert(2, "candidate", "")
 
+    df = df.drop(columns=[col for col in _INTERNAL_EXPORT_COLUMNS if col in df.columns], errors="ignore")
     ordered_columns = [col for col in EVIDENCE_SHORTLIST_COLUMNS if col in df.columns]
     ordered_columns.extend([col for col in df.columns if col not in ordered_columns])
     return df.loc[:, ordered_columns]

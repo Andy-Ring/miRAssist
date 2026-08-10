@@ -204,7 +204,43 @@ def _fetch_pandas_candidate_pool(
     limit = int(get_db_candidate_limit())
 
     def _limit(df: pd.DataFrame) -> pd.DataFrame:
-        return df.head(limit).copy()
+        ordered = df.copy()
+        sort_columns: List[str] = []
+        ascending: List[bool] = []
+        for column, direction in (
+            ("mirassist_model_score", False),
+            ("mirassist_xgboost_score", False),
+            ("overall_evidence_support_percentile", False),
+            ("evidence_family_count", False),
+            ("mirna_name_normalized", True),
+            ("gene_symbol_normalized", True),
+            ("transcript_id", True),
+            ("evidence_row_id", True),
+        ):
+            if column in ordered.columns and column not in sort_columns:
+                values = pd.to_numeric(ordered[column], errors="coerce") if not direction else None
+                if direction or (values is not None and values.notna().any()):
+                    sort_columns.append(column)
+                    ascending.append(direction)
+                    if column in {"mirassist_model_score", "mirassist_xgboost_score"}:
+                        break
+        # Add label-independent tie breaks after the chosen persisted score.
+        for column, direction in (
+            ("overall_evidence_support_percentile", False),
+            ("evidence_family_count", False),
+            ("mirna_name_normalized", True),
+            ("gene_symbol_normalized", True),
+            ("transcript_id", True),
+            ("evidence_row_id", True),
+        ):
+            if column in ordered.columns and column not in sort_columns:
+                sort_columns.append(column)
+                ascending.append(direction)
+        if sort_columns:
+            ordered = ordered.sort_values(
+                sort_columns, ascending=ascending, kind="mergesort", na_position="last"
+            )
+        return ordered.head(limit).copy()
 
     if direction == "mirna_to_targets":
         col = str(mirna_norm_col)
@@ -335,10 +371,35 @@ def fetch_parquet_candidate_pool(query_token: str, cfg: "Any") -> Tuple[pd.DataF
     def _run(entity_expr: Any) -> pd.DataFrame:
         expr = entity_expr if base is None else (entity_expr & base)
         table = dataset.to_table(columns=selected, filter=expr)
+        frame = table.to_pandas()
         limit = int(get_db_candidate_limit())
-        if table.num_rows > limit:
-            table = table.slice(0, limit)
-        return table.to_pandas()
+        score_column = next(
+            (
+                column
+                for column in ("mirassist_model_score", "mirassist_xgboost_score")
+                if column in frame.columns
+                and pd.to_numeric(frame[column], errors="coerce").notna().any()
+            ),
+            None,
+        )
+        sort_columns = [score_column] if score_column else []
+        ascending = [False] if score_column else []
+        for column, direction in (
+            ("overall_evidence_support_percentile", False),
+            ("evidence_family_count", False),
+            ("mirna_name_normalized", True),
+            ("gene_symbol_normalized", True),
+            ("transcript_id", True),
+            ("evidence_row_id", True),
+        ):
+            if column in frame.columns and column not in sort_columns:
+                sort_columns.append(column)
+                ascending.append(direction)
+        if sort_columns:
+            frame = frame.sort_values(
+                sort_columns, ascending=ascending, kind="mergesort", na_position="last"
+            )
+        return frame.head(limit).copy()
 
     if direction == "mirna_to_targets":
         df = _run(_isin_lower(str(mirna_norm_col), primary)) if primary else pd.DataFrame()

@@ -689,6 +689,12 @@ def build_evidence_sections(row: pd.Series, tcga: Optional[str] = None) -> Dict[
     raw_key_values: Dict[str, Any] = {}
     raw_keys = [
         "support_count",
+        "mirassist_score",
+        "mirassist_model_score",
+        "mirassist_model_version",
+        "mirassist_score_rank_within_mirna",
+        "mirassist_filtered_rank",
+        "mirassist_score_percentile_within_mirna",
         "mirassist_xgboost_score",
         "learned_score_used",
         "_learned_score_missing",

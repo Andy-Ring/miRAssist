@@ -59,7 +59,8 @@ def test_gene_to_mirnas_prompt_and_shortlist_table_use_mirna_candidates() -> Non
     table = build_evidence_shortlist_table(shortlist, "gene_to_mirnas")
 
     assert table["candidate"].tolist() == ["hsa-miR-22-3p", "hsa-miR-107"]
-    assert {"mirna_name", "gene_symbol", "mirassist_xgboost_score", "evidence_family_count"}.issubset(table.columns)
+    assert {"mirna_name", "gene_symbol", "miRAssist score", "Model version", "evidence_family_count"}.issubset(table.columns)
+    assert "mirassist_xgboost_score" not in table.columns
 
     csv_roundtrip = pd.read_csv(BytesIO(evidence_shortlist_csv_bytes(table)))
     assert csv_roundtrip["mirna_name"].tolist() == table["mirna_name"].tolist()

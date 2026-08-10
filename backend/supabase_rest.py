@@ -77,20 +77,20 @@ def _rest_order(available: set, score_column: Optional[str]) -> str:
     parts: List[str] = []
     if score_column and score_column != "retrieval_score" and score_column in available:
         parts.append(f"{score_column}.desc.nullslast")
-    if "support_count" in available:
-        parts.append("support_count.desc.nullslast")
-    if "mirdb_best_score" in available:
-        parts.append("mirdb_best_score.desc.nullslast")
-    if "ts_context_strength" in available:
-        parts.append("ts_context_strength.desc.nullslast")
-    elif "ts_best_contextpp" in available:
-        parts.append("ts_best_contextpp.asc.nullslast")
-    if "clip_exp_sum" in available:
-        parts.append("clip_exp_sum.desc.nullslast")
-    if "best_mfe" in available:
-        parts.append("best_mfe.asc.nullslast")
-    if "retrieval_score" in available:
-        parts.append("retrieval_score.desc.nullslast")
+    if "overall_evidence_support_percentile" in available:
+        parts.append("overall_evidence_support_percentile.desc.nullslast")
+    if "evidence_family_count" in available:
+        parts.append("evidence_family_count.desc.nullslast")
+    if "mirassist_score_rank_within_mirna" in available:
+        parts.append("mirassist_score_rank_within_mirna.asc.nullslast")
+    for column in (
+        "mirna_name_normalized",
+        "gene_symbol_normalized",
+        "transcript_id",
+        "evidence_row_id",
+    ):
+        if column in available:
+            parts.append(f"{column}.asc.nullslast")
     if not parts:
         parts.append("gene_symbol.asc")
     return ",".join(parts)

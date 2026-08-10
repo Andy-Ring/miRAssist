@@ -3,8 +3,8 @@ Evidence snapshot bootstrap for the miRAssist Claude skill.
 
 The Cowork sandbox blocks arbitrary network egress, but github.com is on the
 default allowlist. So instead of querying Supabase live, the skill downloads a
-one-time evidence snapshot (a parquet exported from the Supabase table, learned
-XGBoost scores and precomputed percentiles included) from the project's GitHub
+one-time evidence snapshot (a Parquet export with versioned miRAssist scores
+and precomputed percentiles included) from the project's GitHub
 Releases, caches it locally, and reads from it thereafter.
 
 Configure the release asset URL via `evidence_parquet_url` in skill_settings.json

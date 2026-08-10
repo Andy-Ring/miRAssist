@@ -207,7 +207,14 @@ class WorkerDiagnosticTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "done")
         self.assertEqual(result["retrieval_diagnostics"]["n_final_shortlist"], 0)
-        self.assertIn("No candidates passed the current filters.", result["answer"]["summary"])
+        self.assertIn(
+            "No candidates met the current evidence-supported Variant A eligibility criteria.",
+            result["answer"]["summary"],
+        )
+        self.assertIn(
+            "This does not establish that the miRNA has no biological targets.",
+            result["answer"]["summary"],
+        )
 
 
 @unittest.skipUnless(os.environ.get("DATABASE_URL"), "DATABASE_URL is not set")

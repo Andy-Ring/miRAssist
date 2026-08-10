@@ -760,7 +760,7 @@ class DirectionalityTruthTableRegressionTests(unittest.TestCase):
 
 
 
-    def test_directional_consistency_reranks_without_excluding_unannotated_candidates(self) -> None:
+    def test_directional_consistency_is_annotated_without_overriding_score_order(self) -> None:
         evidence = pd.DataFrame([
             {"mirna_name": "hsa-miR-1-5p", "gene_symbol": "ABSENT", "support_count": 2, "mirdb_best_score": 99.0},
             {"mirna_name": "hsa-miR-1-5p", "gene_symbol": "CONSISTENT", "support_count": 2, "mirdb_best_score": 10.0},
@@ -793,13 +793,13 @@ class DirectionalityTruthTableRegressionTests(unittest.TestCase):
         ranked, _, diagnostics = retrieve_candidates(evidence, "miR-1-5p", cfg)
         self.assertEqual(
             ranked["gene_symbol"].tolist(),
-            ["CONSISTENT", "ABSENT", "CONFLICT"],
+            ["CONFLICT", "ABSENT", "CONSISTENT"],
         )
-        self.assertTrue(diagnostics["directional_reranking_applied"])
+        self.assertFalse(diagnostics["directional_reranking_applied"])
         self.assertEqual(ranked.iloc[0]["predicted_mirna_effect_on_target"], "decreased")
-        self.assertEqual(ranked.iloc[0]["target_role_evidence_status"], "consistent")
+        self.assertEqual(ranked.iloc[0]["target_role_evidence_status"], "conflicting")
         self.assertEqual(ranked.iloc[1]["target_role_evidence_status"], "absent")
-        self.assertEqual(ranked.iloc[2]["target_role_evidence_status"], "conflicting")
+        self.assertEqual(ranked.iloc[2]["target_role_evidence_status"], "consistent")
 
 
 

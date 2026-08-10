@@ -41,6 +41,7 @@ Hard rules:
 - Do not call a candidate "strongest" solely because it has more categories.
 - If the backend provides `overall_priority_tier`, use it.
 - Do not describe computational predictions as experimental validation.
+- The miRAssist score is a relative prioritization score, never an interaction probability.
 
 Evidence interpretation rules:
 - The six major evidence families are sequence complementarity, thermodynamic stability, sequence conservation, target site accessibility, functional binding, and functional repression.
@@ -56,8 +57,8 @@ Evidence interpretation rules:
 - Phrase directional context as "consistent with" or "candidate target interpretation", not as proof that the target gene caused the phenotype.
 
 Novel mode rules:
-- In novel mode, known curated interactions excluded by the backend must NOT appear in the ranked list.
-- Known interactions may be mentioned only as background context, not as novel candidates.
+- In novel mode, interactions aligned to the retained miRTarBase known-positive set must NOT appear in the ranked list.
+- Describe remaining candidates only as "not aligned to the retained miRTarBase known-positive set"; do not call them definitively novel or experimentally unvalidated.
 
 Required output format:
 
@@ -184,7 +185,10 @@ def build_user_prompt(
                 f"for {expected_role.replace('_', ' ')} genes in {phenotype}, not on invented gene memberships."
             )
     if novel:
-        ctx_lines.append("- Mode: NOVEL (known curated interactions excluded by the backend should not be ranked as novel)")
+        ctx_lines.append(
+            "- Mode: NOVEL (candidates are not aligned to the retained miRTarBase known-positive set; "
+            "this is not a claim that they are definitively novel or experimentally unvalidated)"
+        )
     if needs_clarification:
         ctx_lines.append(f"- Ambiguities noted by planner: {', '.join(needs_clarification)}")
     if retrieval_diagnostics.get("user_notes"):
@@ -435,7 +439,12 @@ def build_prompt_bundle(
             "rank": index,
             "gene_symbol": card.get("gene_symbol"),
             "mirna_name": card.get("mirna_name"),
-            "mirassist_xgboost_score": (card.get("raw_key_values") or {}).get("mirassist_xgboost_score"),
+            "mirassist_score": card.get("mirassist_score"),
+            "mirassist_model_score": card.get("mirassist_model_score"),
+            "mirassist_model_version": card.get("mirassist_model_version"),
+            "global_rank_within_mirna": card.get("mirassist_score_rank_within_mirna"),
+            "filtered_rank": card.get("mirassist_filtered_rank"),
+            "score_percentile_within_mirna": card.get("mirassist_score_percentile_within_mirna"),
             "score_column_used": (card.get("raw_key_values") or {}).get("score_column_used"),
             "evidence_family_count": card.get("evidence_family_count"),
             "evidence_families_present": card.get("evidence_families_present") or card.get("evidence_categories_present"),

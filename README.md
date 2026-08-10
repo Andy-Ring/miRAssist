@@ -5,8 +5,8 @@
 ### A context-aware, evidence-integration framework for interpretable miRNA–target prioritization
 
 miRAssist prioritizes candidate microRNA–target interactions (MTIs) by integrating six
-families of experimental and computational evidence, ranking them with a backend XGBoost
-model, and interpreting the results through a large language model (LLM) planner and
+families of experimental and computational evidence, ranking them with the approved
+Variant A random-forest backend, and interpreting the results through a large language model (LLM) planner and
 synthesis layer.
 
 **Try it now (no install required):** hosted web app on Posit Connect Cloud →
@@ -44,12 +44,11 @@ It answers two core questions:
 - **miRNA → targets:** *"Which genes does miR-21 target in breast cancer?"*
 - **gene → miRNAs:** *"Which miRNAs regulate PTEN?"*
 
-Under the hood, a transcript-level candidate database integrates six evidence families
-across 577,118 potential MTIs. A backend XGBoost model — trained to prioritize interactions
-resembling experimentally confirmed positives from miRTarBase — ranks the candidates, and
-outperforms individual external prediction tools (TargetScan, miRDB, DIANA-microT, miRanda,
-RNA22) at recovering held-out miRTarBase positives (AUROC 0.835 on the test set). A large
-language model (LLM) planner and synthesis layer then lets users ask natural-language
+Under the hood, the frozen evidence-supported Variant A universe contains 280,917
+transcript-level candidates, including 2,583 interactions aligned to the retained
+miRTarBase known-positive set. The approved `mirassist_rf_variant_a_v1` random forest ranks
+these candidates (held-out AUROC 0.846238; PR-AUC 0.134752). A large language model (LLM)
+planner and synthesis layer then lets users ask natural-language
 questions and receive ranked candidates with evidence-grounded explanations, including
 context-aware filtering by GO Biological Process, Reactome, WikiPathways, and Hallmark
 gene sets, plus cancer type (TCGA).
@@ -68,8 +67,8 @@ language layer is instructed never to invent numbers or gene–phenotype relatio
 1. **Planner** — an LLM converts a natural-language question into a structured database
    query (entity, direction, cancer context, pathway/phenotype intent, filters).
 2. **Retrieval & ranking** — miRAssist pulls candidate MTIs for the query and ranks them by
-   the backend XGBoost score (with a transparent fallback to a manual composite score when
-   a learned score is unavailable).
+   the canonical `mirassist_score`. Production uses `mirassist_model_score`; the legacy
+   `mirassist_xgboost_score` fallback is retained only for explicit rollback/compatibility.
 3. **Context-aware filtering** — when a question names a pathway, the search is restricted
    to genes in matching GO Biological Process, Reactome, WikiPathways, or Hallmark sets;
    when it names a cancer type, functional-repression evidence is filtered to that TCGA
@@ -81,12 +80,12 @@ The two deployments differ only in *who plays the planner and synthesis layer*:
 
 | | Planner & synthesizer | Evidence source |
 |---|---|---|
-| **Streamlit app** | OpenAI-hosted models | GitHub-hosted CSV snapshot (Supabase no longer required) |
+| **Streamlit app** | OpenAI-hosted models | Frozen Variant A/RF v1 Parquet or versioned PostgreSQL table |
 | **Claude skill** | Claude itself (no OpenAI key) | GitHub-hosted CSV snapshot, cached locally |
 
-Both read the same evidence snapshot published on GitHub Releases, so **neither requires a
-live database**. (Live Supabase Postgres/REST remains available as an option — see the
-configuration reference.)
+The production app defaults to the checksum-validated local Variant A/RF v1 Parquet table.
+A versioned PostgreSQL table is supported for hosted deployments; legacy snapshots require
+an explicit rollback pointer and are never selected silently.
 
 ## Evidence families
 
@@ -153,15 +152,15 @@ Then run:
 streamlit run app.py
 ```
 
-`mirassist_evidence_pairs.csv.gz` can be downloaded from the most recent GitHub release and stored at data/processed. If the file isn't present, the app instead
-downloads the snapshot from the GitHub Release and caches it under
-`~/.cache/mirassist`.
+`data/processed/mirassist_evidence_variant_a_rf_v1.parquet` is the active local
+production table. It is a byte-identical copy of the approved frozen scored release and is
+validated before cutover with `scripts/validate_variant_a_rf_v1_production.py`.
 
 ---
 
 ## Option B — Claude skill
 
-The Claude skill wraps the same deterministic retrieval + XGBoost ranking core, but Claude
+The Claude skill retains its packaged compatibility runtime; the production application uses the Variant A/RF v1 retrieval core, but Claude
 plays the planner and synthesizer roles. **No API keys are required**. On first use it downloads a one-time evidence snapshot from this repo's GitHub
 Releases and caches it locally, so **end users configure nothing**. Skill assets live in
 [`mirassist-skill/`](mirassist-skill/), with a pre-packaged installer at `mirassist.skill`.
@@ -197,13 +196,12 @@ output-column reference.
 
 | Variable | Purpose | Typical value |
 |---|---|---|
-| `EVIDENCE_BACKEND` | Evidence source | `github` (default) / `parquet` (offline) / `postgres` / `rest` |
-| `MIRASSIST_EVIDENCE_URL` | Snapshot URL (github mode) | `https://github.com/Andy-Ring/miRAssist/releases/download/v0.0.1/mirassist_evidence_pairs.csv.gz` |
-| `MIRASSIST_CACHE_DIR` | Snapshot cache dir | `~/.cache/mirassist` |
-| `MIRASSIST_EVIDENCE` | Local parquet path (offline mode) | `/path/to/evidence.parquet` |
+| `EVIDENCE_BACKEND` | Evidence source | `parquet` (default) / `postgres` / `rest` / explicit legacy `github` |
+| `EVIDENCE_TABLE` | Hosted versioned table | `mirassist_evidence_variant_a_rf_v1` |
+| `MIRASSIST_EVIDENCE` | Active local production table | `data/processed/mirassist_evidence_variant_a_rf_v1.parquet` |
 | `JOBSTORE_BACKEND` | Job persistence (app) | `filesystem` / `postgres` |
-| `MIRASSIST_USE_LEARNED_SCORE` | Enable XGBoost ranking | `1` |
-| `MIRASSIST_LEARNED_SCORE_COLUMN` | Learned-score column | `learned_score_xgb_raw_v1` |
+| `MIRASSIST_USE_LEARNED_SCORE` | Enable persisted miRAssist ranking | `1` |
+| `MIRASSIST_LEARNED_SCORE_COLUMN` | Preferred persisted score field | `mirassist_model_score` |
 | `MIRASSIST_DEFAULT_RESULT_COUNT` | Ranked results shown | `5` |
 | `OPENAI_API_KEY` | OpenAI key (app only) | `sk-...` |
 | `MIRASSIST_PLANNER_MODEL` / `MIRASSIST_SYNTH_MODEL` | LLM models (app only) | `gpt-5.4-nano` / `gpt-5.4-mini` |
@@ -216,7 +214,7 @@ output-column reference.
 miRAssist/
 ├── app.py                     # Streamlit entry point (hosted on Posit)
 ├── frontend/                  # Streamlit UI
-├── backend/                   # planner, retrieval, XGBoost ranking, pathways, synthesizer,
+├── backend/                   # planner, canonical score/RF retrieval, pathways, synthesizer,
 │                              #   snapshot loader (evidence_bootstrap, parquet_snapshot)
 ├── data/processed/            # pathway data
 ├── evaluation/                # benchmarking & paper-figure pipeline
@@ -227,6 +225,25 @@ miRAssist/
 ```
 
 ---
+
+
+## Production score and scientific limitations
+
+The **miRAssist score** is a relative prioritization score within the
+evidence-supported Variant A candidate universe. It is not a probability that an
+interaction is biologically true. Technically, RF v1 stores the raw uncalibrated
+random-forest positive-class vote fraction and uses it only for relative prioritization.
+
+Variant A requires a canonical 3′ UTR seed site plus TargetScan, miRNA-specific CLIP, or
+significant TCGA anticorrelation support. RF v1 does not support Variant D or the
+9.3-million sequence master. Evaluation is positive-unlabeled: miRTarBase supplies known
+positives, not confirmed negatives. Eligibility indicators (TargetScan/CLIP/TCGA)
+contribute materially to model performance, so results are evidence-conditioned.
+MANE Select can omit isoform-specific interactions; TCGA anticorrelation is indirect;
+and CLIP does not prove direct targeting in every assay context.
+
+Operational schema, rollback, and migration details are in
+[`docs/production_variant_a_rf_v1.md`](docs/production_variant_a_rf_v1.md).
 
 ## Citation & license
 

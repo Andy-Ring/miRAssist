@@ -11,9 +11,17 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
 PROCESSED_DIR = DATA_DIR / "processed"
 
+PRODUCTION_EVIDENCE_PATH = PROCESSED_DIR / "mirassist_evidence_variant_a_rf_v1.parquet"
+PRODUCTION_EVIDENCE_TABLE = "public.mirassist_evidence_variant_a_rf_v1"
+PRODUCTION_SCHEMA_VERSION = "mirassist_evidence_variant_a_rf_v1"
+PRODUCTION_CANDIDATE_UNIVERSE = "variant_a"
+PRODUCTION_MODEL_VERSION = "mirassist_rf_variant_a_v1"
+
 DEFAULT_EVIDENCE_CANDIDATES = (
+    PRODUCTION_EVIDENCE_PATH,
     PROCESSED_DIR / "evidence_interactions.parquet",
     PROCESSED_DIR / "evidence_pairs_tcga.parquet",
+    PROCESSED_DIR / "mirassist_evidence_pairs.parquet",
 )
 
 
@@ -141,9 +149,9 @@ def get_jobstore_backend() -> str:
 
 
 def get_evidence_backend() -> str:
-    # miRAssist reads evidence from a GitHub-hosted CSV snapshot by default, so
-    # neither the app nor the skill requires Supabase. Explicit values still work:
-    # parquet (local file), postgres/rest (live Supabase) remain available.
+    # Production defaults to the frozen, versioned Variant A/RF v1 Parquet table.
+    # Explicit postgres/rest/GitHub values remain available for deployed databases
+    # and legacy rollback, but production never silently falls back to Variant D.
     requested = (os.getenv("EVIDENCE_BACKEND", "") or "").strip().lower()
     if requested in {"github", "snapshot", "github_snapshot"}:
         return "github"
@@ -152,16 +160,19 @@ def get_evidence_backend() -> str:
     if requested == "parquet":
         return "parquet"
     if requested == "postgres":
-        return "postgres" if database_configured() else "github"
-    # No explicit backend: use a configured local parquet if present, else the snapshot.
+        return "postgres"
+    # No explicit backend: use an explicitly configured path or the versioned local
+    # production table. Missing production data fails closed during loading.
     if _first_nonempty(os.getenv("MIRASSIST_EVIDENCE"), os.getenv("MIRASSIST_EVIDENCE_PATH")):
         return "parquet"
-    return "github"
+    return "parquet"
 
 
 def get_evidence_table() -> str:
-    table_name = (_setting("EVIDENCE_TABLE", "evidence_table", "public.mirassist_evidence_pairs")
-                  or "public.mirassist_evidence_pairs").strip()
+    # The app's production table pointer is controlled explicitly by EVIDENCE_TABLE.
+    # Bundled skill settings may retain a legacy table for backward compatibility.
+    table_name = (_first_nonempty(os.getenv("EVIDENCE_TABLE"), PRODUCTION_EVIDENCE_TABLE)
+                  or PRODUCTION_EVIDENCE_TABLE).strip()
     if "." not in table_name:
         table_name = f"public.{table_name}"
     return table_name
@@ -185,16 +196,19 @@ def resolve_evidence_path(explicit: str | None = None) -> Path:
     base = _first_nonempty(os.getenv("MIASSIST_BASE"))
     if base:
         base_path = Path(base).expanduser().resolve()
-        for name in ("evidence_interactions.parquet", "evidence_pairs_tcga.parquet"):
+        for name in (
+            PRODUCTION_EVIDENCE_PATH.name,
+            "evidence_interactions.parquet",
+            "evidence_pairs_tcga.parquet",
+            "mirassist_evidence_pairs.parquet",
+        ):
             candidate_path = base_path / "data" / "processed" / name
             if candidate_path.exists():
                 return candidate_path.resolve()
 
-    for path in DEFAULT_EVIDENCE_CANDIDATES:
-        if path.exists():
-            return path.resolve()
-
-    return DEFAULT_EVIDENCE_CANDIDATES[0].resolve()
+    # Fail closed on the versioned production path. Legacy evidence remains
+    # available only through an explicit MIRASSIST_EVIDENCE rollback pointer.
+    return PRODUCTION_EVIDENCE_PATH.resolve()
 
 
 def resolve_job_dir() -> Path:
@@ -288,7 +302,7 @@ def get_use_learned_score() -> bool:
 
 
 def get_learned_score_column() -> str:
-    return (os.getenv("MIRASSIST_LEARNED_SCORE_COLUMN", "learned_score_xgb_raw_v1") or "learned_score_xgb_raw_v1").strip()
+    return (os.getenv("MIRASSIST_LEARNED_SCORE_COLUMN", "mirassist_model_score") or "mirassist_model_score").strip()
 
 
 def get_default_mirna_arm() -> str:
