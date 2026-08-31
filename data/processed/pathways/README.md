@@ -8,9 +8,10 @@ specific biological processes and curated pathways over broad contextual signatu
 3. WikiPathways Human (`WikiPathways_2024_Human`, Enrichr export)
 4. MSigDB Hallmark (the 50 sets previously bundled by miRAssist)
 
-`pathways.csv.gz` / `pathways.parquet` contain pathway metadata and JSON-encoded gene
-lists. `gene_to_pathways.csv.gz` / `gene_to_pathways.parquet` contain the normalized
-gene-to-pathway mapping used by downstream filtering.
+`pathways.parquet` contains pathway metadata and JSON-encoded gene lists.
+`gene_to_pathways.parquet` contains the normalized gene-to-pathway mapping used by
+downstream filtering. Only the Parquet representation is committed to avoid duplicating
+the same data in the repository and packaged Claude skill.
 
 Rebuild the tables with pinned local GMT files:
 

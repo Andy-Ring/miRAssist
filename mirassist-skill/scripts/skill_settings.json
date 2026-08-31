@@ -1,7 +1,7 @@
 {
-  "_comment": "One-time setup by the skill author. DEFAULT mode reads a GitHub-hosted evidence snapshot (github.com is on the Cowork network allowlist). Set evidence_parquet_url to a public GitHub Release asset: a parquet exported from the Supabase mirassist_evidence_pairs table WITH the learned-score and precomputed percentile columns. The supabase_* fields are only used if you switch EVIDENCE_BACKEND=rest and your environment allowlists the Supabase host. End users set nothing. Env vars (MIRASSIST_EVIDENCE_URL, MIRASSIST_EVIDENCE, EVIDENCE_BACKEND, MIRASSIST_SUPABASE_URL, MIRASSIST_SUPABASE_ANON_KEY, EVIDENCE_TABLE) override these.",
-  "evidence_parquet_url": "https://github.com/YOUR_GITHUB_USER/miRAssist/releases/download/v1.0-evidence/mirassist_evidence_pairs.parquet",
+  "_comment": "miRAssist 1.0 defaults to the public production evidence snapshot in the latest GitHub release. The Supabase fields are used only with EVIDENCE_BACKEND=rest. Environment variables override these settings.",
+  "evidence_parquet_url": "https://github.com/Andy-Ring/miRAssist/releases/latest/download/mirassist_evidence_pairs.parquet",
   "supabase_url": "https://vkbkeernvifbefwmkaae.supabase.co",
   "supabase_anon_key": "sb_publishable_u3o7FcnHpm3o4TfoxgJldQ_6AqVOixG",
-  "evidence_table": "mirassist_evidence_pairs"
+  "evidence_table": "mirassist_evidence_variant_a_rf_v1"
 }

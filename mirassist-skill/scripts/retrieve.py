@@ -4,7 +4,7 @@ miRAssist headless retrieval CLI.
 
 This is the deterministic scientific core of miRAssist, exposed as a command-line
 tool for use inside a Claude skill. It does NOT call any LLM. Claude itself plays
-the roles that OpenAI used to play in the Streamlit app:
+the planner and synthesizer roles:
 
   * PLANNER    : Claude reads the researcher's natural-language question and turns
                  it into the structured arguments below (or a full --queryspec-json).
@@ -16,15 +16,13 @@ What this script does:
   2. Enriches / validates it with the existing planner schema logic
      (arm defaulting, target-role inference, directional pathway terms).
   3. Resolves grounded pathway/phenotype gene sets from the bundled pathway data.
-  4. Retrieves candidates from the evidence backend (Supabase/Postgres in
-     production, or a local parquet for development) and ranks them by the
-     precomputed learned XGBoost score, falling back to the manual retrieval
-     score where the learned score is missing.
+  4. Retrieves candidates from the production evidence snapshot and ranks them
+     by the persisted miRAssist random-forest score.
   5. Prints a compact JSON result: ranked candidates + diagnostics.
 
 Evidence backend is selected by environment variables (see SKILL.md):
-  EVIDENCE_BACKEND=postgres  + DATABASE_URL + EVIDENCE_TABLE   (production)
-  EVIDENCE_BACKEND=parquet   + MIRASSIST_EVIDENCE=/path.parquet (development)
+  EVIDENCE_BACKEND=github                                      (default)
+  EVIDENCE_BACKEND=parquet + MIRASSIST_EVIDENCE=/path.parquet  (local)
 """
 from __future__ import annotations
 
@@ -46,7 +44,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 CORE_OUTPUT_COLUMNS: List[str] = [
     "mirna_name",
     "gene_symbol",
+    "mirassist_score",
+    "mirassist_model_score",
+    "mirassist_model_version",
+    "mirassist_score_rank_within_mirna",
+    "mirassist_score_percentile_within_mirna",
+    "mirassist_filtered_rank",
     "support_count",
+    "mirtarbase_known_positive",
+    "known_validated_mti",
     "learned_score_used",
     "retrieval_rank_score",
     "score_column_used",
@@ -93,6 +99,10 @@ def _jsonable(value: Any) -> Any:
 
     if value is None:
         return None
+    if isinstance(value, (list, tuple, set)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
     if np is not None:
         if isinstance(value, (np.integer,)):
             return int(value)
@@ -108,10 +118,6 @@ def _jsonable(value: Any) -> Any:
                 return None
         except (TypeError, ValueError):
             pass
-    if isinstance(value, (list, tuple, set)):
-        return [_jsonable(v) for v in value]
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
     return value
 
 
@@ -252,6 +258,9 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
             "ranking_mode": diagnostics.get("retrieval_ranking_mode"),
             "learned_score_column": diagnostics.get("learned_score_column"),
             "score_column_used": diagnostics.get("score_column_used"),
+            "model_version": diagnostics.get("model_version"),
+            "candidate_universe_version": diagnostics.get("candidate_universe_version"),
+            "score_semantics": diagnostics.get("score_semantics"),
             "learned_score_present_count": diagnostics.get("learned_score_present_count"),
             "learned_score_missing_count": diagnostics.get("learned_score_missing_count"),
             "n_final_shortlist": diagnostics.get("n_final_shortlist"),
@@ -260,7 +269,9 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
         if diagnostics.get("user_notes")
         else diagnostics.get("arm_interpretation_note"),
         "warnings": diagnostics.get("warnings") or [],
-        "no_candidates_explanation": diagnostics.get("no_candidates_explanation"),
+        "no_candidates_explanation": (
+            diagnostics.get("no_candidates_explanation") if not candidates else None
+        ),
         "n_candidates": len(candidates),
         "candidates": candidates,
     }
@@ -269,7 +280,7 @@ def run(args: argparse.Namespace) -> Dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="miRAssist headless retrieval (deterministic XGBoost-ranked miRNA-target evidence)."
+        description="miRAssist 1.0 headless retrieval for ranked miRNA-target evidence."
     )
     p.add_argument("--question", default="", help="Original researcher question (for logging/relaxation heuristics).")
     p.add_argument("--queryspec-json", default=None, help="Path to a full QuerySpec JSON (overrides individual flags).")

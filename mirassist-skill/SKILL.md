@@ -1,175 +1,143 @@
 ---
 name: mirassist
-description: Predict and rank miRNA-target (miRNA-mRNA) interactions from grounded experimental and computational evidence. Use when a researcher asks which genes a microRNA targets, which miRNAs regulate a gene, or wants ranked, evidence-backed miRNA-target candidates - optionally filtered by cancer type (TCGA) or a phenotype/pathway such as apoptosis, proliferation, EMT, invasion, or migration. Triggers on mentions of miRNA/microRNA/miR-*, targets, seed sites, TargetScan/miRDB/ENCORI/CLIP, miRTarBase, or TCGA anticorrelation.
+description: Retrieve and explain ranked, evidence-grounded miRNA–target candidates. Use when a researcher asks which genes a miRNA targets, which miRNAs regulate a gene, or requests candidates filtered by TCGA cancer context, phenotype, pathway, novelty, or evidence support.
 ---
 
-# miRAssist
+# miRAssist 1.0
 
-miRAssist answers miRNA-target interaction questions by retrieving candidates from a
-curated evidence database and ranking them with a learned XGBoost model. The database
-integrates miRTarBase (curated functional support), TargetScan and miRDB (computational
-prediction), CLIP/ENCORI (binding), seed/site architecture, RNAhybrid/MFE thermodynamics,
-RNAplfold accessibility, and TCGA expression anticorrelation, with grounded pathway
-membership for phenotype filtering.
+Use the bundled deterministic CLI to retrieve candidates from the production evidence
+snapshot. You provide the two language layers:
 
-**Your role.** This skill exposes only the deterministic scientific core as a CLI
-(`scripts/retrieve.py`). No LLM runs inside it. You act as the two intelligent layers:
+1. **Planner** — translate the researcher’s question into CLI arguments.
+2. **Synthesizer** — explain the returned JSON without adding unsupported biology.
 
-1. **Planner** - turn the researcher's question into CLI arguments.
-2. **Synthesizer** - turn the CLI's JSON output into a grounded, plain-language answer.
+The CLI integrates sequence complementarity, RNAhybrid thermodynamics, TargetScan
+conservation, RNAplfold accessibility, CLIP/ENCORI binding, and TCGA repression evidence.
+It ranks candidates with the persisted production random-forest score.
 
-The single hard rule: **use only the values, labels, and pathway memberships the CLI
-returns. Never invent scores, percentiles, pathway/phenotype links, or gene functions
-that are not in the output.**
-
----
+The hard rule is: **use only values, labels, candidate identities, and pathway memberships
+returned by the CLI.** Never invent scores, percentiles, mechanisms, validation status,
+gene functions, or gene–phenotype relationships.
 
 ## Setup
 
-**For end users: nothing to configure.** On first use the skill downloads a one-time
-evidence snapshot from the project's GitHub Releases (github.com is on the Cowork network
-allowlist) and caches it locally; later queries reuse the cache. Install the light
-dependencies once:
+End users configure nothing. Install the lightweight Python dependencies once:
 
-```bash
-pip install -r requirements.txt      # pandas, numpy, pyarrow, requests
-```
+~~~bash
+pip install -r requirements.txt
+~~~
 
-Then just ask miRNA-target questions in natural language.
+On first use, the CLI downloads the production evidence snapshot from the latest
+miRAssist GitHub release and caches it. Later queries reuse the cache. If the download
+fails, report the returned error instead of guessing.
 
-### One-time setup for the skill author/publisher
+## Plan the query
 
-If you are forking or re-publishing miRAssist, publish the evidence snapshot once:
+Choose the direction and entity:
 
-1. **Export the Supabase evidence table to parquet**, including the learned-score
-   (`learned_score_xgb_raw_v1`) and precomputed `*_percentile` columns:
+- `mirna_to_targets`: the question centers on a miRNA.
+- `gene_to_mirnas`: the question centers on a gene.
+- `--mirna` accepts forms such as `hsa-miR-21-5p`, `miR-21`, or
+  `microRNA-21`. Do not add a mature arm the researcher did not specify; the backend
+  applies its default and returns an interpretation note.
+- `--gene` accepts a gene symbol such as `PTEN` or `PDCD4`.
 
-   ```python
-   import pandas as pd, sqlalchemy as sa
-   e = sa.create_engine("postgresql+psycopg://USER:PASSWORD@HOST:5432/postgres")
-   pd.read_sql("select * from public.mirassist_evidence_pairs", e) \
-     .to_parquet("mirassist_evidence_pairs.parquet", index=False)
-   ```
+Optional context:
 
-2. **Attach it to a public GitHub Release** of your miRAssist repo.
+- `--tcga BRCA|COAD|PRAD`, or `--cancer-name` with breast, colorectal, or prostate
+  cancer. Do not imply that other cohorts have TCGA repression evidence.
+- `--phenotype` for apoptosis, proliferation, EMT, invasion, migration, or another
+  explicit biological process.
+- `--observed-change` and `--perturbation` when the question describes an experiment.
+  The backend applies the usual miRNA-repression assumption and labels any inferred target
+  role as an interpretation, never proof.
 
-3. **Put the asset URL** in `scripts/skill_settings.json` under `evidence_parquet_url`:
+Filters:
 
-   ```json
-   { "evidence_parquet_url": "https://github.com/<you>/miRAssist/releases/download/v1.0-evidence/mirassist_evidence_pairs.parquet" }
-   ```
+- `--novel`: exclude candidates aligned to the retained miRTarBase known-positive set.
+  Use for “new,” “exploratory,” or “unvalidated” requests.
+- `--min-support N`: require at least N evidence families. Use 2 when the researcher
+  explicitly asks for multiple independent lines of evidence.
+- `--require-binding`: require sequence or binding evidence.
+- `--require-expression`: require paired TCGA expression evidence; pair with `--tcga`.
+- `--result-count N`: number of results to return; default 5.
+- `--k N`: retrieval shortlist size; default 10.
 
-The snapshot is read-only public data - no keys required for end users. When the data
-changes, upload a new release (bump the tag) and update the URL; the cache re-downloads
-automatically. Retrieval reads only the rows for the queried miRNA/gene (via parquet
-predicate pushdown), so the full table is never loaded into memory.
+Do not ask a clarifying question when backend defaults resolve the omission safely.
+Do ask when the entity or intended query direction cannot be determined.
 
-### Other backends (optional)
+## Retrieve
 
-- **Offline / development:** `EVIDENCE_BACKEND=parquet` + `MIRASSIST_EVIDENCE=/path.parquet`.
-- **Live Supabase REST** (only if your environment allowlists the Supabase host):
-  `EVIDENCE_BACKEND=rest`, with `supabase_url` + `supabase_anon_key` in skill_settings.json
-  and a read-only RLS `SELECT` policy on the table.
+Run the CLI from the skill directory:
 
-If the snapshot cannot be fetched, the CLI returns a clear JSON error - relay it rather
-than guessing.
+~~~bash
+python3 scripts/retrieve.py \
+  --mirna "hsa-miR-21-5p" \
+  --tcga BRCA \
+  --phenotype apoptosis \
+  --observed-change promoted \
+  --perturbation overexpression \
+  --result-count 5 \
+  --pretty
+~~~
 
----
+For complete control, pass a QuerySpec JSON:
 
-## Step 1 - Plan: build the query
+~~~bash
+python3 scripts/retrieve.py --queryspec-json spec.json --pretty
+~~~
 
-Read the researcher's question and decide the arguments. Do not ask clarifying questions
-for details the CLI already defaults sensibly (e.g. mature arm, result count).
+The result contains:
 
-**Direction / mode**
-- `mirna_to_targets` - the question centers on a miRNA ("what does miR-21 target?").
-- `gene_to_mirnas` - the question centers on a gene ("which miRNAs regulate PTEN?").
+- `query`: resolved direction, entity, context, and filters.
+- `pathway_selection`: deterministically selected pathways and genes.
+- `ranking`: evidence backend and persisted score diagnostics.
+- `arm_interpretation_note`, `warnings`, and `no_candidates_explanation`.
+- `candidates`: the ordered evidence-grounded shortlist.
 
-**Entity**
-- `--mirna` accepts any form: `hsa-miR-21-5p`, `miR-21`, `microRNA-21`. If no mature arm
-  (`-3p`/`-5p`) is given, the tool defaults to `-5p` and returns an `arm_interpretation_note`
-  you should pass along to the user. Only add an arm if the user specified one.
-- `--gene` takes a gene symbol (uppercased automatically), e.g. `PTEN`, `PDCD4`.
+The QuerySpec schema is in [reference/queryspec_schema.md](reference/queryspec_schema.md).
 
-**Cancer context** (optional): `--tcga BRCA|COAD|PRAD` (or `--cancer-name "breast cancer"`,
-which the planner maps to a TCGA code). Only three cohorts have TCGA anticorrelation data:
-BRCA, COAD, PRAD.
+## Synthesize
 
-**Phenotype / pathway context** (optional but powerful). If the user mentions a phenotype
-(apoptosis, proliferation, EMT, invasion, migration, energy metabolism), pass `--phenotype`.
-If they describe an experiment, also pass the direction so the tool can infer whether the
-relevant targets are positive or negative regulators:
-- `--observed-change promoted|enhanced|suppressed|inhibited|increased|decreased|reduced|unchanged|unknown|associated`
-- `--perturbation overexpression|increased|mimic|knockdown|inhibition|inhibitor|antagomir|knockout|depletion|decreased|unknown`
+Write a concise researcher-facing answer in the exact candidate order returned.
 
-The logic is an assumption based on typical miRNA-mediated repression. Increased miRNA
-(including mimic treatment) implies decreased target expression; decreased miRNA (including
-knockdown, inhibitor/antagomir, knockout, or depletion) implies increased target expression.
-Combining that with the observed phenotype direction yields the expected positive- or
-negative-regulator role. Unknown or contradictory directions remain unknown. General
-phenotype pathways are retained, while explicit directional GO/curated annotations are used
-as a reranking signal by default rather than a hard exclusion.
+For each candidate:
 
-**Other flags**
-- `--novel` - only novel/unvalidated targets (excludes miRTarBase-positive pairs). Use when
-  the user asks for "new", "exploratory", or "unvalidated" targets.
-- `--min-support N` - minimum number of distinct evidence categories (default 1). Raise to 2
-  if the user asks for "high-confidence" / "multiple lines of evidence".
-- `--require-binding` - require TargetScan/ENCORI/miRDB binding evidence.
-- `--require-expression` - require paired TCGA expression (needs `--tcga`).
-- `--result-count N` - final results to return (default 5). `--k N` - candidate pool size
-  (default 10).
+- identify the miRNA and gene;
+- report the miRAssist score and rank exactly as returned;
+- distinguish evidence breadth (`support_count` or `evidence_family_count`) from
+  evidence strength;
+- name only evidence families supported by returned fields;
+- report pathway membership only when `pathway_selected_gene` is true and use only
+  `pathway_selected_names`;
+- surface relevant cancer-specific TCGA values only for the requested cohort;
+- pass along arm notes, warnings, missing evidence, and empty-result explanations.
 
-## Step 2 - Retrieve: run the CLI
+Explain that candidates are ranked by the production miRAssist score when
+`ranking.score_column_used` is `mirassist_model_score`. If the CLI reports a fallback,
+name the returned fallback mode and do not present it as the production model score.
 
-```bash
-python3 scripts/retrieve.py --mirna "hsa-miR-21-5p" --tcga BRCA \
-  --phenotype apoptosis --observed-change promoted --perturbation overexpression \
-  --result-count 5 --pretty
-```
+Interpret percentiles using these fixed labels:
 
-For full control you can instead pass a complete QuerySpec JSON (schema in
-`reference/queryspec_schema.md`): `python3 scripts/retrieve.py --queryspec-json spec.json`.
+- 95 or higher: exceptional
+- 90–94.9: very high
+- 75–89.9: high
+- 50–74.9: above average
+- 25–49.9: typical
+- below 25: low
+- missing: not available
 
-The command prints one JSON object: `query` (the resolved spec), `pathway_selection`
-(which pathways/genes were used), `ranking` (which score column ranked the results),
-`arm_interpretation_note`, `warnings`, and `candidates` (the ranked list).
+Scientific boundaries:
 
-## Step 3 - Synthesize: write the grounded answer
+- The miRAssist score is relative prioritization, not a biological probability.
+- Sequence and TargetScan support are computational, not experimental validation.
+- CLIP supports binding but does not by itself prove context-specific direct targeting.
+- TCGA anticorrelation is consistent with repression but does not prove direct repression.
+- Absence of a returned evidence family is missing evidence, not evidence against an
+  interaction.
+- Do not use external literature unless the researcher separately asks for a literature
+  search; keep those claims distinct from the retrieved miRAssist evidence.
+- Recommend experimental follow-up where appropriate, but do not claim confirmation.
 
-Read the JSON and write a concise, researcher-facing answer. Rules:
-
-- **Ground everything.** Report scores, `support_count`, percentiles, and pathway
-  membership exactly as returned. Do not compute your own percentiles or invent
-  gene-phenotype or gene-pathway links. `pathway_selected_gene: 1` (with names in
-  `pathway_selected_names`) is the only sanctioned pathway claim.
-- **Explain the ranking basis.** State whether results were ranked by the learned XGBoost
-  score (`ranking.ranking_mode` like `learned:learned_score_xgb_raw_v1`) or fell back to
-  the manual retrieval score (`learned:retrieval_score` / `manual`), and note if some rows
-  used the fallback (`learned_score_missing_count`).
-- **Distinguish breadth from strength.** `support_count` / `evidence_family_count` measure
-  how many independent evidence categories support a pair (breadth); the rank score
-  reflects overall priority. A pair with fewer categories can still outrank one with more
-  if its signals are strong. Say so when relevant.
-- **Name the evidence types** behind a candidate using the flags present: miRTarBase
-  (`mirtarbase_pos`) = curated functional support; TargetScan/miRDB = computational
-  prediction; CLIP/ENCORI (`clip_exp_sum`) = binding; seed/site architecture; RNAhybrid/MFE
-  = thermodynamic; TCGA `*_anticorrelated`/`*_repression_evidence` = context-specific
-  repression in that cancer.
-- **Interpret percentiles with the standard labels** (computed against the full database):
-  >=95 exceptional, >=90 very high, >=75 high, >=50 above average, >=25 typical, <25 low,
-  missing = not available.
-- **Pass along notes and caveats.** Surface `arm_interpretation_note` (which arm was
-  assumed), any `warnings`, and `no_candidates_explanation` when the list is empty.
-- **Do not overstate.** These are ranked *candidates* from integrated evidence, not proven
-  interactions. Recommend experimental validation (e.g. luciferase reporter, Ago-CLIP,
-  Western blot after mimic/inhibitor) where appropriate.
-
-A good answer typically leads with the top candidates and why they rank highly (evidence
-types + strength), notes the ranking basis and arm assumption, and ends with any caveats.
-
----
-
-## Reference
-- `reference/queryspec_schema.md` - full QuerySpec JSON schema for `--queryspec-json`.
-- `reference/evidence_columns.md` - meaning of the evidence/score columns in the output.
+Evidence field definitions are in
+[reference/evidence_columns.md](reference/evidence_columns.md).

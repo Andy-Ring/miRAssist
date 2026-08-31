@@ -3,9 +3,9 @@ Evidence snapshot bootstrap for the miRAssist Claude skill.
 
 The Cowork sandbox blocks arbitrary network egress, but github.com is on the
 default allowlist. So instead of querying Supabase live, the skill downloads a
-one-time evidence snapshot (a parquet exported from the Supabase table, learned
-XGBoost scores and precomputed percentiles included) from the project's GitHub
-Releases, caches it locally, and reads from it thereafter.
+one-time production evidence snapshot, including the persisted miRAssist score
+and precomputed percentiles, from the project's latest GitHub Release. It caches
+the snapshot locally and reads from it thereafter.
 
 Configure the release asset URL via `evidence_parquet_url` in skill_settings.json
 (or the MIRASSIST_EVIDENCE_URL environment variable).
@@ -43,7 +43,7 @@ def _cache_dir() -> Path:
 
 
 def _cache_path_for(url: str) -> Path:
-    # Version the cache by URL so bumping the release tag re-downloads cleanly.
+    # Version the cache by URL so changing the configured asset refreshes cleanly.
     digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:12]
     return _cache_dir() / f"evidence_{digest}.parquet"
 

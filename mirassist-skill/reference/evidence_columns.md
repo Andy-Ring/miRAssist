@@ -6,11 +6,18 @@ verbatim in your answer. Do not compute new percentiles or invent values.
 ## Identity & ranking
 - `rank` - 1-based position in the returned list.
 - `mirna_name`, `gene_symbol` - the interaction pair.
-- `retrieval_rank_score` / `learned_score_used` - the value the pair was ranked by. This is
-  the learned XGBoost score when present, otherwise the manual `retrieval_score` fallback.
-- `score_column_used` - which column supplied the rank score for this row
-  (`learned_score_xgb_raw_v1` = XGBoost model; `retrieval_score` = manual fallback).
-- `_learned_score_missing` - 1 if this row fell back to the manual score.
+- `mirassist_score` - canonical relative prioritization score used for ranking.
+- `mirassist_model_score` - persisted production random-forest score.
+- `mirassist_model_version` - model identifier attached to that score.
+- `mirassist_score_rank_within_mirna` - frozen global rank for the miRNA.
+- `mirassist_score_percentile_within_mirna` - score percentile within that miRNA.
+- `mirassist_filtered_rank` - rank after the requested filters.
+- `retrieval_rank_score` / `learned_score_used` - compatibility aliases for the
+  value used to order the returned candidates.
+- `score_column_used` - persisted column used for this row. Production rows use
+  `mirassist_model_score`.
+- `_learned_score_missing` - 1 only when the persisted score was unavailable and the
+  row used the deterministic retrieval fallback.
 - `retrieval_score` - the deterministic manual composite score (support + TargetScan + CLIP
   + miRDB + TCGA + optional structure), always present.
 
@@ -52,7 +59,11 @@ Interpret with labels: >=95 exceptional, >=90 very high, >=75 high, >=50 above a
 - `pathway_selected_names` - the specific matched pathway names for that gene.
 
 ## Top-level fields (outside `candidates`)
-- `ranking.ranking_mode` - e.g. `learned:learned_score_xgb_raw_v1` or `manual`.
+- `ranking.ranking_mode` - ranking contract selected by the backend.
+- `ranking.score_column_used` - expected to be `mirassist_model_score` for the
+  production snapshot.
+- `ranking.model_version`, `ranking.score_semantics` - model and interpretation
+  metadata. The score is never a biological probability.
 - `pathway_selection` - which pathways/genes were used and the inferred target role.
 - `arm_interpretation_note` - which mature arm was assumed when none was specified.
 - `warnings`, `no_candidates_explanation` - surface these to the user when present.

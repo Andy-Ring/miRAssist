@@ -5,13 +5,14 @@ from pathlib import Path
 
 
 PROJECT_NAME = "miRAssist"
-VERSION = os.getenv("MIRASSIST_VERSION", "0.2.0")
+VERSION = os.getenv("MIRASSIST_VERSION", "1.0.0")
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
 PROCESSED_DIR = DATA_DIR / "processed"
 
 DEFAULT_EVIDENCE_CANDIDATES = (
+    PROCESSED_DIR / "mirassist_evidence_variant_a_rf_v1.parquet",
     PROCESSED_DIR / "evidence_interactions.parquet",
     PROCESSED_DIR / "evidence_pairs_tcga.parquet",
 )
@@ -101,7 +102,12 @@ def get_supabase_anon_key() -> str | None:
 
 
 def get_evidence_parquet_url() -> str | None:
-    return _setting("MIRASSIST_EVIDENCE_URL", "evidence_parquet_url")
+    return _setting(
+        "MIRASSIST_EVIDENCE_URL",
+        "evidence_parquet_url",
+        "https://github.com/Andy-Ring/miRAssist/releases/latest/download/"
+        "mirassist_evidence_pairs.parquet",
+    )
 
 
 def supabase_rest_configured() -> bool:
@@ -146,8 +152,14 @@ def get_evidence_backend() -> str:
 
 
 def get_evidence_table() -> str:
-    table_name = (_setting("EVIDENCE_TABLE", "evidence_table", "public.mirassist_evidence_pairs")
-                  or "public.mirassist_evidence_pairs").strip()
+    table_name = (
+        _setting(
+            "EVIDENCE_TABLE",
+            "evidence_table",
+            "public.mirassist_evidence_variant_a_rf_v1",
+        )
+        or "public.mirassist_evidence_variant_a_rf_v1"
+    ).strip()
     if "." not in table_name:
         table_name = f"public.{table_name}"
     return table_name
@@ -274,7 +286,10 @@ def get_use_learned_score() -> bool:
 
 
 def get_learned_score_column() -> str:
-    return (os.getenv("MIRASSIST_LEARNED_SCORE_COLUMN", "learned_score_xgb_raw_v1") or "learned_score_xgb_raw_v1").strip()
+    return (
+        os.getenv("MIRASSIST_LEARNED_SCORE_COLUMN", "mirassist_model_score")
+        or "mirassist_model_score"
+    ).strip()
 
 
 def get_default_mirna_arm() -> str:

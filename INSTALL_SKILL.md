@@ -1,4 +1,4 @@
-# Installing the miRAssist Skill in Claude — Step by Step
+# Installing the miRAssist 1.0 Skill in Claude
 
 This guide is written for bench scientists. It assumes **no computer background** — if you
 can use a web browser and Claude, you can do this. It takes about **5 minutes**, once.
@@ -77,7 +77,7 @@ The skill is now installed. 🎉
 3. Press Enter and wait.
 
 **The very first question takes a little longer — about a minute.** Behind the scenes,
-Claude is doing one-time setup: downloading the miRAssist evidence database (about 106 MB)
+Claude is doing one-time setup: downloading the miRAssist evidence database (about 60 MB)
 and getting ready. This only happens once; every question after that is quick.
 
 You'll know it's working when Claude replies with a **ranked list of candidates** and a
@@ -102,7 +102,8 @@ Tips:
 - Mention a **process** (apoptosis, proliferation, EMT, invasion, migration) to focus on
   genes in that pathway.
 - Ask for **"high-confidence"** results to require multiple lines of evidence, or
-  **"novel"** results to focus on targets that aren't already experimentally confirmed.
+  **"novel"** results to exclude candidates aligned to the retained miRTarBase
+  known-positive set.
 
 ---
 

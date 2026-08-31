@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 PROJECT_NAME = "miRAssist"
-VERSION = os.getenv("MIRASSIST_VERSION", "0.2.0")
+VERSION = os.getenv("MIRASSIST_VERSION", "1.0.0")
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT_DIR / "data"
@@ -76,8 +76,8 @@ import json as _json
 _SKILL_SETTINGS_CACHE: dict | None = None
 
 DEFAULT_EVIDENCE_URL = (
-    "https://github.com/Andy-Ring/miRAssist/releases/download/"
-    "v0.0.1/mirassist_evidence_pairs.csv.gz"
+    "https://github.com/Andy-Ring/miRAssist/releases/latest/download/"
+    "mirassist_evidence_pairs.csv.gz"
 )
 
 

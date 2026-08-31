@@ -10,6 +10,20 @@ import re
 import numpy as np
 import pandas as pd
 
+from backend.runtime_diagnostics import trace, traced
+from backend.score_loader import (
+    APPROVED_MODEL_VERSION,
+    CANONICAL_SCORE_COLUMN,
+    CANDIDATE_UNIVERSE_VERSION,
+    FILTERED_RANK_COLUMN,
+    GLOBAL_RANK_COLUMN,
+    LEGACY_SCORE_COLUMN,
+    MODEL_SCORE_COLUMN,
+    MODEL_VERSION_COLUMN,
+    SCORE_PERCENTILE_COLUMN,
+    SCORE_SEMANTICS,
+    load_compatible_scores,
+)
 
 from backend.config import (
     get_db_candidate_limit,
@@ -39,6 +53,7 @@ MIRTARBASE_KNOWN_POSITIVE_COLUMNS: Tuple[str, ...] = (
 )
 
 PRODUCTION_EVIDENCE_COLUMNS: Tuple[str, ...] = (
+    "evidence_row_id",
     "mirna_name",
     "gene_symbol",
     "mirna_name_norm",
@@ -46,6 +61,10 @@ PRODUCTION_EVIDENCE_COLUMNS: Tuple[str, ...] = (
     "mirna_name_normalized",
     "gene_symbol_normalized",
     "transcript_id",
+    "mirassist_model_score",
+    "mirassist_model_version",
+    "mirassist_score_rank_within_mirna",
+    "mirassist_score_percentile_within_mirna",
     "mirassist_xgboost_score",
     "best_backend_model_score",
     "learned_score",
@@ -196,9 +215,10 @@ def _load_evidence_parquet(
     columns: list[str] | None = None,
 ) -> pd.DataFrame:
     resolved_path = str(resolve_evidence_path(evidence_path))
-    if columns:
-        return pd.read_parquet(resolved_path, columns=columns)
-    return pd.read_parquet(resolved_path)
+    with traced(f"pandas read_parquet path={resolved_path}"):
+        if columns:
+            return pd.read_parquet(resolved_path, columns=columns)
+        return pd.read_parquet(resolved_path)
 
 
 def _load_evidence_postgres(
@@ -269,6 +289,11 @@ def load_evidence(
     # Safety: remove duplicate column labels (can happen after merges)
     if df.columns.duplicated().any():
         df = df.loc[:, ~df.columns.duplicated()].copy()
+
+    if MODEL_SCORE_COLUMN in df.columns or LEGACY_SCORE_COLUMN in df.columns:
+        loaded = load_compatible_scores(df, source_name=source)
+        df = loaded.frame
+        df.attrs["mirassist_score_metadata"] = dict(loaded.metadata)
 
     _EVIDENCE_CACHE = df
     _EVIDENCE_SOURCE = source
@@ -359,19 +384,24 @@ def _sql_in_clause(column_sql: str, param_prefix: str, values: List[str], params
 
 
 def _postgres_rank_tiebreak_columns(available: set[str]) -> List[str]:
+    """Approved label-independent Variant A ranking tie breaks."""
     order_columns: List[str] = []
-    if "support_count" in available:
-        order_columns.append('"support_count" DESC NULLS LAST')
-    if "mirdb_best_score" in available:
-        order_columns.append('"mirdb_best_score" DESC NULLS LAST')
-    if "ts_context_strength" in available:
-        order_columns.append('"ts_context_strength" DESC NULLS LAST')
-    elif "ts_best_contextpp" in available:
-        order_columns.append('"ts_best_contextpp" ASC NULLS LAST')
-    if "clip_exp_sum" in available:
-        order_columns.append('"clip_exp_sum" DESC NULLS LAST')
-    if "best_mfe" in available:
-        order_columns.append('"best_mfe" ASC NULLS LAST')
+    if "overall_evidence_support_percentile" in available:
+        order_columns.append('"overall_evidence_support_percentile" DESC NULLS LAST')
+    if "evidence_family_count" in available:
+        order_columns.append('"evidence_family_count" DESC NULLS LAST')
+    if GLOBAL_RANK_COLUMN in available:
+        order_columns.append(f'"{GLOBAL_RANK_COLUMN}" ASC NULLS LAST')
+    for candidate in (
+        "mirna_name_normalized",
+        "mirna_name_norm",
+        "gene_symbol_normalized",
+        "gene_symbol_norm",
+        "transcript_id",
+        "evidence_row_id",
+    ):
+        if candidate in available:
+            order_columns.append(f'"{candidate}" ASC NULLS LAST')
     return order_columns
 
 
@@ -652,34 +682,25 @@ def _safe_int_col(df: pd.DataFrame, col: str, default: int = 0) -> pd.Series:
 
 
 def _candidate_score_columns(configured_score_column: str) -> List[str]:
-    candidates: List[str] = ["mirassist_xgboost_score"]
+    """Persisted score fields in mandatory production precedence order."""
     configured = str(configured_score_column or "").strip()
-    if configured:
+    candidates = [MODEL_SCORE_COLUMN, LEGACY_SCORE_COLUMN]
+    if configured and configured not in candidates:
         candidates.append(configured)
-    candidates.extend(
-        [
-            "best_backend_model_score",
-            "learned_score",
-            "model_score",
-            "overall_evidence_support_percentile",
-            "retrieval_score",
-        ]
-    )
-    out: List[str] = []
-    for candidate in candidates:
-        if candidate and candidate not in out:
-            out.append(candidate)
-    return out
+    return candidates
 
 
 def _resolve_score_column(df: pd.DataFrame, configured_score_column: str) -> Optional[str]:
     for candidate in _candidate_score_columns(configured_score_column):
-        if candidate in df.columns:
+        if candidate in df.columns and pd.to_numeric(df[candidate], errors="coerce").notna().any():
             return candidate
     return None
 
 
-def _resolve_score_column_from_available(available_columns: Iterable[str], configured_score_column: str) -> Optional[str]:
+def _resolve_score_column_from_available(
+    available_columns: Iterable[str],
+    configured_score_column: str,
+) -> Optional[str]:
     available = {str(col) for col in available_columns}
     for candidate in _candidate_score_columns(configured_score_column):
         if candidate in available:
@@ -687,113 +708,126 @@ def _resolve_score_column_from_available(available_columns: Iterable[str], confi
     return None
 
 
+def _approved_rank_columns(frame: pd.DataFrame) -> Tuple[List[str], List[bool]]:
+    columns: List[str] = [CANONICAL_SCORE_COLUMN]
+    ascending: List[bool] = [False]
+    for column, direction in (
+        ("overall_evidence_support_percentile", False),
+        ("evidence_family_count", False),
+        (GLOBAL_RANK_COLUMN, True),
+        ("mirna_name_normalized", True),
+        ("mirna_name_norm", True),
+        ("gene_symbol_normalized", True),
+        ("gene_symbol_norm", True),
+        ("transcript_id", True),
+        ("evidence_row_id", True),
+    ):
+        if column in frame.columns and column not in columns:
+            columns.append(column)
+            ascending.append(direction)
+    return columns, ascending
+
+
 def apply_learned_score_ranking(
     df: pd.DataFrame,
     learned_score_column: str,
     enabled: bool,
 ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+    """Rank by canonical miRAssist score while retaining legacy API fields."""
+    trace(
+        f"before canonical ranking configured_score_column={learned_score_column} "
+        f"enabled={enabled} rows={len(df)}"
+    )
     ranked = df.copy()
     retrieval_score = _safe_float_col(ranked, "retrieval_score", default=0.0)
-    support_tiebreak = _safe_float_col(ranked, "support_count", default=0.0)
-    mirdb_tiebreak = _safe_float_col(ranked, "mirdb_best_score", default=0.0)
-    clip_tiebreak = _safe_float_col(ranked, "clip_exp_sum", default=0.0)
-    mfe_tiebreak = np.clip(-_safe_float_col(ranked, "best_mfe", default=0.0), 0.0, 100.0)
-    if "ts_context_strength" in ranked.columns:
-        ts_tiebreak = _safe_float_col(ranked, "ts_context_strength", default=0.0)
-    elif "retrieval_ts_contrib" in ranked.columns:
-        ts_tiebreak = _safe_float_col(ranked, "retrieval_ts_contrib", default=0.0)
-    else:
-        ts_tiebreak = np.clip(-_safe_float_col(ranked, "ts_best_contextpp", default=0.0), 0.0, 2.0)
-
     diagnostics: Dict[str, Any] = {
         "learned_score_enabled": False,
         "retrieval_ranking_mode": "manual",
         "learned_score_column": learned_score_column,
         "score_column_used": "retrieval_score",
+        "active_score_source": "retrieval_score",
+        "canonical_score_column": CANONICAL_SCORE_COLUMN,
+        "model_version": None,
+        "candidate_universe_version": None,
+        "score_semantics": "manual evidence composite fallback",
         "learned_score_present_count": 0,
         "learned_score_missing_count": int(len(ranked)),
+        "score_conflict_checked": False,
     }
 
-    ranked = ranked.assign(
-        retrieval_rank_score=retrieval_score.astype(float),
-        learned_score_used=retrieval_score.astype(float),
-        _learned_score_missing=pd.Series(np.ones(len(ranked), dtype=int), index=ranked.index),
-        score_column_used=pd.Series(["retrieval_score"] * len(ranked), index=ranked.index, dtype="object"),
-        _retrieval_support_tiebreak=support_tiebreak.astype(float),
-        _retrieval_mirdb_tiebreak=mirdb_tiebreak.astype(float),
-        _retrieval_ts_tiebreak=ts_tiebreak.astype(float),
-        _retrieval_clip_tiebreak=clip_tiebreak.astype(float),
-        _retrieval_mfe_tiebreak=mfe_tiebreak.astype(float),
-    )
-
-    if not enabled:
-        ranked = ranked.sort_values(
-            [
-                "retrieval_rank_score",
-                "_retrieval_support_tiebreak",
-                "_retrieval_mirdb_tiebreak",
-                "_retrieval_ts_tiebreak",
-                "_retrieval_clip_tiebreak",
-                "_retrieval_mfe_tiebreak",
-                "retrieval_score",
-            ],
-            ascending=[False, False, False, False, False, False, False],
-        )
-        return ranked, diagnostics
-
     selected_score_column = _resolve_score_column(ranked, learned_score_column)
-    diagnostics["learned_score_column"] = selected_score_column or learned_score_column
-    diagnostics["score_column_used"] = selected_score_column or "retrieval_score"
-
-    if selected_score_column is None:
-        diagnostics["warnings"] = [
-            "No preferred learned-score columns were present in the evidence rows; using manual retrieval_score ranking."
-        ]
-        ranked = ranked.sort_values(
-            [
-                "retrieval_rank_score",
-                "_retrieval_support_tiebreak",
-                "_retrieval_mirdb_tiebreak",
-                "_retrieval_ts_tiebreak",
-                "_retrieval_clip_tiebreak",
-                "_retrieval_mfe_tiebreak",
-                "retrieval_score",
-            ],
-            ascending=[False, False, False, False, False, False, False],
+    if not enabled or selected_score_column is None:
+        ranked = ranked.assign(
+            retrieval_rank_score=retrieval_score.astype(float),
+            learned_score_used=retrieval_score.astype(float),
+            _learned_score_missing=pd.Series(
+                np.ones(len(ranked), dtype=int), index=ranked.index
+            ),
+            score_column_used=pd.Series(
+                ["retrieval_score"] * len(ranked), index=ranked.index, dtype="object"
+            ),
         )
+        manual_columns = ["retrieval_rank_score"]
+        manual_ascending = [False]
+        for column in ("overall_evidence_support_percentile", "evidence_family_count"):
+            if column in ranked.columns:
+                manual_columns.append(column)
+                manual_ascending.append(False)
+        ranked = ranked.sort_values(
+            manual_columns,
+            ascending=manual_ascending,
+            kind="mergesort",
+            na_position="last",
+        )
+        if enabled and selected_score_column is None:
+            diagnostics["warnings"] = [
+                "No supported persisted miRAssist score was present; using the manual evidence composite."
+            ]
         return ranked, diagnostics
-    learned_score_values = pd.to_numeric(ranked[selected_score_column], errors="coerce")
-    learned_score_missing = learned_score_values.isna()
-    score_column_used = pd.Series(
-        np.where(learned_score_missing.to_numpy(), "retrieval_score", selected_score_column),
-        index=ranked.index,
-        dtype="object",
+
+    loaded = load_compatible_scores(
+        ranked,
+        source_name="production retrieval candidate pool",
+        require_complete=True,
     )
+    ranked = loaded.frame
+    metadata = dict(loaded.metadata)
+    score_values = pd.to_numeric(ranked[CANONICAL_SCORE_COLUMN], errors="raise").astype(float)
     ranked = ranked.assign(
-        retrieval_rank_score=learned_score_values.where(~learned_score_missing, retrieval_score).astype(float),
-        learned_score_used=learned_score_values.where(~learned_score_missing, retrieval_score).astype(float),
-        _learned_score_missing=learned_score_missing.astype(int),
-        score_column_used=score_column_used,
+        retrieval_rank_score=score_values,
+        learned_score_used=score_values,
+        _learned_score_missing=pd.Series(np.zeros(len(ranked), dtype=int), index=ranked.index),
+        score_column_used=pd.Series(
+            [metadata["score_source_column"]] * len(ranked),
+            index=ranked.index,
+            dtype="object",
+        ),
     )
+    sort_columns, sort_ascending = _approved_rank_columns(ranked)
     ranked = ranked.sort_values(
-        [
-            "_learned_score_missing",
-            "retrieval_rank_score",
-            "_retrieval_support_tiebreak",
-            "_retrieval_mirdb_tiebreak",
-            "_retrieval_ts_tiebreak",
-            "_retrieval_clip_tiebreak",
-            "_retrieval_mfe_tiebreak",
-            "retrieval_score",
-        ],
-        ascending=[True, False, False, False, False, False, False, False],
+        sort_columns,
+        ascending=sort_ascending,
+        kind="mergesort",
+        na_position="last",
     )
     diagnostics.update(
         {
-            "learned_score_enabled": bool(selected_score_column != "retrieval_score"),
-            "retrieval_ranking_mode": f"learned:{selected_score_column}",
-            "learned_score_present_count": int((~learned_score_missing).sum()),
-            "learned_score_missing_count": int(learned_score_missing.sum()),
+            "learned_score_enabled": True,
+            "retrieval_ranking_mode": f"canonical:{metadata['score_source_column']}",
+            "learned_score_column": metadata["score_source_column"],
+            "score_column_used": metadata["score_source_column"],
+            "active_score_source": metadata["score_source_column"],
+            "canonical_score_column": metadata["canonical_score_column"],
+            "model_version": metadata.get("model_version"),
+            "model_versions": metadata.get("model_versions"),
+            "candidate_universe_version": metadata.get("candidate_universe_version"),
+            "schema_version": metadata.get("schema_version"),
+            "score_semantics": metadata.get("score_semantics"),
+            "score_contract": metadata.get("score_contract"),
+            "learned_score_present_count": int(len(ranked)),
+            "learned_score_missing_count": 0,
+            "score_conflict_checked": True,
+            "score_loader_warnings": metadata.get("warnings", []),
         }
     )
     return ranked, diagnostics
@@ -1168,7 +1202,7 @@ def _apply_min_support_with_relaxation(
         if not relaxed_one.empty:
             diagnostics["effective_min_support"] = 1
             diagnostics["relaxed_min_support_reason"] = (
-                "No candidates passed the initial min_support filter for a broad miRNA query, so the threshold was relaxed to 1 while keeping learned-score ranking enabled."
+                "No candidates passed the initial min_support filter for a broad miRNA query, so the threshold was relaxed to 1 while keeping miRAssist-score ranking enabled."
             )
             diagnostics["n_rows_after_min_support"] = int(len(relaxed_one))
             diagnostics["n_after_min_support"] = int(len(relaxed_one))
@@ -1181,7 +1215,7 @@ def _apply_min_support_with_relaxation(
         if not relaxed_zero.empty:
             diagnostics["effective_min_support"] = 0
             diagnostics["relaxed_min_support_reason"] = (
-                "No candidates passed min_support >= 2 or >= 1, so retrieval fell back to min_support 0 and ranked candidates by learned score."
+                "No candidates passed min_support >= 2 or >= 1, so retrieval fell back to min_support 0 and ranked candidates by the miRAssist score."
             )
             diagnostics["n_rows_after_min_support"] = int(len(relaxed_zero))
             diagnostics["n_after_min_support"] = int(len(relaxed_zero))
@@ -1403,8 +1437,19 @@ def _collapse_pair_rows(df: pd.DataFrame) -> pd.DataFrame:
         if c in df.columns:
             agg[c] = _first_nonnull_value
 
-    # Common evidence fields
-    for c in ["support_encori", "support_targetscan", "support_mirdb", "mirtarbase_pos", "label_mirtarbase"]:
+    # Stable identifiers and common evidence fields.
+    for c in ["evidence_row_id", "transcript_id"]:
+        if c in df.columns:
+            agg[c] = _first_nonnull_value
+    for c in [
+        "support_encori",
+        "support_targetscan",
+        "support_mirdb",
+        "mirtarbase_known_positive",
+        "known_validated_mti",
+        "mirtarbase_pos",
+        "label_mirtarbase",
+    ]:
         if c in df.columns:
             agg[c] = "max"
     if "support_count" in df.columns:
@@ -1565,6 +1610,9 @@ def _collapse_pair_rows(df: pd.DataFrame) -> pd.DataFrame:
         agg["gene_pathway_hits"] = "max"
 
     for c in [
+        "mirassist_model_score",
+        "mirassist_score",
+        "mirassist_score_percentile_within_mirna",
         "mirassist_xgboost_score",
         "best_backend_model_score",
         "learned_score",
@@ -1574,7 +1622,14 @@ def _collapse_pair_rows(df: pd.DataFrame) -> pd.DataFrame:
     ]:
         if c in df.columns:
             agg[c] = "max"
-    for c in ["learned_score_model_version", "learned_score_feature_set", "learned_score_updated_at"]:
+    if "mirassist_score_rank_within_mirna" in df.columns:
+        agg["mirassist_score_rank_within_mirna"] = "min"
+    for c in [
+        "mirassist_model_version",
+        "learned_score_model_version",
+        "learned_score_feature_set",
+        "learned_score_updated_at",
+    ]:
         if c in df.columns:
             agg[c] = _first_nonnull_value
 
@@ -1705,6 +1760,20 @@ def retrieve_candidates(
         "n_rows_before_min_support": 0,
         "n_rows_after_min_support": 0,
         "warnings": [],
+        "no_candidates_explanation": (
+            "No candidates met the current evidence-supported Variant A eligibility criteria. "
+            "This does not establish that the miRNA has no biological targets."
+        ),
+        "candidate_universe_version": CANDIDATE_UNIVERSE_VERSION,
+        "schema_version": "mirassist_evidence_variant_a_rf_v1",
+        "model_version": APPROVED_MODEL_VERSION,
+        "active_score_source": MODEL_SCORE_COLUMN,
+        "score_semantics": SCORE_SEMANTICS,
+        "novel_filter_description": (
+            "not aligned to the retained miRTarBase known-positive set"
+            if cfg.novel
+            else None
+        ),
     }
     if direction == "mirna_to_targets":
         diagnostics["query_mirna_normalized"] = _normalize_mirna_query(query_token)[0]
@@ -1939,19 +2008,16 @@ def retrieve_candidates(
         enabled=bool(get_use_learned_score() or _resolve_score_column(df, get_learned_score_column())),
     )
     diagnostics.update({k: v for k, v in ranking_info.items() if k != "warnings"})
-    if expected_target_role in {"positive_regulator", "negative_regulator"} and bool(
-        role_status.isin(["consistent", "conflicting"]).any()
-    ):
-        df = df.assign(_pre_directional_rank=np.arange(len(df), dtype=int))
-        df = df.sort_values(
-            ["directional_consistency_score", "_pre_directional_rank"],
-            ascending=[False, True],
-            kind="stable",
-        ).drop(columns=["_pre_directional_rank"])
-        diagnostics["directional_reranking_applied"] = True
+    # Directionality remains an annotation (or an explicit strict filter), never
+    # an implicit override of the approved RF ordering.
+    diagnostics["directional_reranking_applied"] = False
     for warning in ranking_info.get("warnings", []):
         diagnostics["warnings"].append(warning)
 
+    # The frozen global rank remains untouched. This displayed rank is local to
+    # the current novelty/pathway/cancer/evidence-filtered result set.
+    df[FILTERED_RANK_COLUMN] = np.arange(1, len(df) + 1, dtype=int)
+    df["rank"] = df[FILTERED_RANK_COLUMN]
     df = df.head(int(cfg.k_shortlist)).reset_index(drop=True)
     df = df.drop(
         columns=[
@@ -2099,6 +2165,21 @@ def retrieve_from_queryspec(
             or fetch_diagnostics.get("sort_column_used")
             or fetch_diagnostics.get("learned_score_column"),
             "learned_score_column": fetch_diagnostics.get("learned_score_column", diagnostics.get("learned_score_column")),
+            "active_score_source": diagnostics.get("active_score_source"),
+            "canonical_score_column": diagnostics.get("canonical_score_column", CANONICAL_SCORE_COLUMN),
+            "model_version": diagnostics.get("model_version"),
+            "candidate_universe_version": diagnostics.get("candidate_universe_version", CANDIDATE_UNIVERSE_VERSION),
+            "schema_version": diagnostics.get("schema_version", "mirassist_evidence_variant_a_rf_v1"),
+            "score_semantics": diagnostics.get("score_semantics"),
+            "candidate_count_returned": int(len(shortlist_df)),
+            "retrieval_filters": {
+                "novel": bool(queryspec.get("novel", False)),
+                "cancer_context": tcga,
+                "pathway_enabled": bool(pathway_selection.get("enabled")),
+                "min_support": int(filters.get("min_support", 1)),
+                "require_binding_evidence": bool(filters.get("require_binding_evidence", False)),
+                "require_expression": bool(filters.get("require_expression", False)),
+            },
         }
     )
     if fetch_diagnostics.get("sql_mirna_norm_column"):

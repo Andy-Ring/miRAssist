@@ -17,6 +17,9 @@ __pycache__/
 .eggs/
 build/
 dist/
+.skill-build/
+/mirassist.skill
+/mirassist_skill.zip
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
@@ -53,6 +56,32 @@ evaluation/outputs/*
 *.out
 *.err
 *.sbatch.log
+*.orig
+
+# Local research and validation pipelines. These reproduce internal candidate-universe,
+# planner, and synthesis studies but are not part of the v1.0 application or skill.
+/candidate_generation/
+/configs/
+/docs/evidence_table_consumers.md
+/docs/*candidate_universe_decision_report.md
+/docs/sequence_*.md
+/scripts/*.sbatch
+/scripts/*legacy*
+/scripts/*model*
+/scripts/*planner*
+/scripts/*sequence*
+/scripts/*synthesis*
+/scripts/*tiered*
+/scripts/*variant_a*
+/scripts/reconstruct_tcga_fdr.py
+/scripts/validate_site_orientation.py
+/tests/test_llm_validation*
+/tests/test_model*
+/tests/test_planner*
+/tests/test_sequence*
+/tests/test_synthesis*
+/tests/test_tiered*
+/tests/test_variant_a*
 
 # ---------------------------------------------------------------------------
 # OS / editor cruft
@@ -75,9 +104,9 @@ Thumbs.db
 /data/processed/*.csv
 /data/processed/*.csv.gz
 !/data/processed/pathways/
-!/data/processed/pathways/*.csv.gz
-!/data/processed/pathways/*.csv
 !/data/processed/pathways/*.parquet
+/mirassist-skill/scripts/data/processed/pathways/*.csv
+/mirassist-skill/scripts/data/processed/pathways/*.csv.gz
 /mirassist_evidence_pairs_test.csv
 
 # The active RF-v1 table is a local validation copy. The canonical table for

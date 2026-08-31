@@ -2,59 +2,33 @@
 
 <img src="frontend/assets/miRAssist_logo.png" alt="miRAssist" width="440">
 
-### A context-aware, evidence-integration framework for interpretable miRNA–target prioritization
+### Evidence-grounded, context-aware miRNA–target prioritization
 
-miRAssist prioritizes candidate microRNA–target interactions (MTIs) by integrating six
-families of experimental and computational evidence, ranking them with the approved
-Variant A random-forest backend, and interpreting the results through a large language model (LLM) planner and
-synthesis layer.
+**Version 1.0**
 
-**Try it now (no install required):** hosted web app on Posit Connect Cloud →
-**https://andy-ring-mirassist.share.connect.posit.cloud/**
-
-Or install it as a **Claude skill** and integrate miRAssist into your Claude workflows.
+[Launch the hosted app](https://andy-ring-mirassist.share.connect.posit.cloud/) ·
+[Download the Claude skill](https://github.com/Andy-Ring/miRAssist/releases/latest)
 
 </div>
 
 ---
 
-## Contents
+## What miRAssist does
 
-- [What it is](#what-it-is)
-- [How it works](#how-it-works)
-- [Evidence families](#evidence-families)
-- [Option A — Streamlit web app](#option-a--streamlit-web-app)
-- [Option B — Claude skill](#option-b--claude-skill)
-- [Configuration reference](#configuration-reference)
-- [Repository layout](#repository-layout)
-- [Citation & license](#citation--license)
+miRAssist ranks candidate microRNA–target interactions and explains the evidence behind
+each result. It supports both common query directions:
 
----
+- **miRNA → targets:** “Which genes does miR-21 target in breast cancer?”
+- **gene → miRNAs:** “Which miRNAs regulate PTEN?”
 
-## What it is
+The production evidence universe contains 280,917 transcript-level candidates, including
+2,583 interactions aligned to the retained miRTarBase known-positive set. A validated
+random-forest model ranks the candidates using integrated sequence, structure, binding,
+and expression evidence. Its held-out performance was AUROC 0.846238 and PR-AUC 0.134752.
 
-Many MTI prediction tools return a score or ranked list without making the supporting
-evidence easy to interpret, which makes it hard to tell *why* a target was prioritized or
-whether the evidence is relevant to a specific biological question. miRAssist addresses
-this: it ranks candidate MTIs *and* explains the evidence supporting each one, in the
-biological context the user cares about.
-
-It answers two core questions:
-
-- **miRNA → targets:** *"Which genes does miR-21 target in breast cancer?"*
-- **gene → miRNAs:** *"Which miRNAs regulate PTEN?"*
-
-Under the hood, the frozen evidence-supported Variant A universe contains 280,917
-transcript-level candidates, including 2,583 interactions aligned to the retained
-miRTarBase known-positive set. The approved `mirassist_rf_variant_a_v1` random forest ranks
-these candidates (held-out AUROC 0.846238; PR-AUC 0.134752). A large language model (LLM)
-planner and synthesis layer then lets users ask natural-language
-questions and receive ranked candidates with evidence-grounded explanations, including
-context-aware filtering by GO Biological Process, Reactome, WikiPathways, and Hallmark
-gene sets, plus cancer type (TCGA).
-
-Every reported score, percentile, and pathway membership comes from the database — the
-language layer is instructed never to invent numbers or gene–phenotype relationships.
+The language layer never generates scientific measurements. Scores, percentiles,
+candidate ranks, pathway memberships, and cancer-context evidence are computed by the
+backend and supplied to the synthesizer as constrained evidence cards.
 
 ## How it works
 
@@ -64,195 +38,160 @@ language layer is instructed never to invent numbers or gene–phenotype relatio
 
 </div>
 
-1. **Planner** — an LLM converts a natural-language question into a structured database
-   query (entity, direction, cancer context, pathway/phenotype intent, filters).
-2. **Retrieval & ranking** — miRAssist pulls candidate MTIs for the query and ranks them by
-   the canonical `mirassist_score`. Production uses `mirassist_model_score`; the legacy
-   `mirassist_xgboost_score` fallback is retained only for explicit rollback/compatibility.
-3. **Context-aware filtering** — when a question names a pathway, the search is restricted
-   to genes in matching GO Biological Process, Reactome, WikiPathways, or Hallmark sets;
-   when it names a cancer type, functional-repression evidence is filtered to that TCGA
-   cohort (BRCA, COAD, PRAD).
-4. **Synthesis** — an LLM writes an evidence-grounded explanation using only backend-computed
-   values and labels.
+1. **Plan** — direct entity lookups use a deterministic parser; complex questions use an
+   LLM to produce a structured `QuerySpec`. Backend normalization then resolves direction,
+   miRNA arm handling, supported cancer contexts, phenotype direction, filters, and result
+   limits.
+2. **Retrieve and rank** — the backend queries the frozen production evidence snapshot,
+   applies the requested evidence and novelty filters, and preserves the validated
+   random-forest ranking.
+3. **Apply biological context** — pathway requests are resolved against GO Biological
+   Process, Reactome, WikiPathways, and Hallmark gene sets. BRCA, COAD, and PRAD queries
+   can use cohort-specific TCGA repression evidence.
+4. **Synthesize** — the LLM receives only the ranked evidence cards. It must preserve
+   candidate order, attribute evidence to the correct candidate, treat the miRAssist score
+   as relative prioritization rather than biological probability, and avoid unsupported
+   pathway, mechanism, or validation claims.
 
-The two deployments differ only in *who plays the planner and synthesis layer*:
-
-| | Planner & synthesizer | Evidence source |
-|---|---|---|
-| **Streamlit app** | OpenAI-hosted models | Frozen Variant A/RF v1 Parquet or versioned PostgreSQL table |
-| **Claude skill** | Claude itself (no OpenAI key) | GitHub-hosted CSV snapshot, cached locally |
-
-The production app defaults to the checksum-validated local Variant A/RF v1 Parquet table.
-A versioned PostgreSQL table is supported for hosted deployments; legacy snapshots require
-an explicit rollback pointer and are never selected silently.
+The Streamlit app uses OpenAI models for planning and synthesis. The Claude skill exposes
+the same deterministic retrieval contract as a local CLI, with Claude performing the
+planning and synthesis steps.
 
 ## Evidence families
 
-miRAssist integrates six families of evidence spanning sequence, structure, and functional
-measurements:
-
-| Evidence family | Source | Captures |
+| Evidence family | Source | What it captures |
 |---|---|---|
-| Sequence complementarity | miRNA & mRNA 3′UTR sequences | 8mer / 7mer-m8 / 7mer-A1 / 6mer seed matches |
-| Sequence conservation | TargetScan | cross-species conservation of target sites |
-| Thermodynamic stability | RNAhybrid | free energy of the miRNA–mRNA duplex |
-| Target-site accessibility | RNAplfold | local unpaired probability of the target site |
-| Functional binding | CLIP-seq (ENCORI) | measured miRNA–mRNA binding |
-| Functional repression | TCGA (BRCA, COAD, PRAD) | miRNA–mRNA expression anticorrelation |
+| Sequence complementarity | miRNA and mRNA 3′ UTR sequences | canonical seed matches |
+| Sequence conservation | TargetScan | conserved target-site context |
+| Thermodynamic stability | RNAhybrid | miRNA–mRNA duplex free energy |
+| Target-site accessibility | RNAplfold | local unpaired probability |
+| Functional binding | CLIP-seq / ENCORI | measured binding support |
+| Functional repression | TCGA | expression anticorrelation in BRCA, COAD, and PRAD |
 
-Experimentally confirmed interactions from **miRTarBase** are held out as ground-truth
-labels for evaluation and are excluded from the model's input features.
+miRTarBase known positives are used as evaluation labels and are not model input
+features. Feature percentiles are computed against the complete production evidence
+universe.
 
-Feature percentiles are computed against the full database and reported with fixed labels
-(`≥95` exceptional, `≥90` very high, `≥75` high, `≥50` above average, `≥25` typical,
-`<25` low).
+## Use the web app
 
----
+The hosted app is available at:
 
-## Option A — Streamlit web app
+https://andy-ring-mirassist.share.connect.posit.cloud/
 
-The interactive UI shows the ranked-candidate chart, the planner output (`QuerySpec`), and
-the evidence shortlist.
+To run it locally:
 
-### Use the hosted app (no setup)
-
-The app is live on Posit Connect Cloud — just open it and start asking questions:
-
-**https://andy-ring-mirassist.share.connect.posit.cloud/**
-
-### Run it locally
-
-The app needs only an OpenAI key — evidence is pulled from the GitHub snapshot and jobs are
-stored on the local filesystem, so **no database is required**.
-
-```bash
+~~~bash
 git clone https://github.com/Andy-Ring/miRAssist.git
 cd miRAssist
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
-```
+~~~
 
-Edit `.env` and set your OpenAI key (the evidence and job-storage defaults already work):
+Set an OpenAI API key in `.env`:
 
-```bash
+~~~dotenv
 MIRASSIST_LLM_BACKEND=openai
 OPENAI_API_KEY=sk-...
 MIRASSIST_PLANNER_MODEL=gpt-5.4-nano
 MIRASSIST_SYNTH_MODEL=gpt-5.4-mini
 
-EVIDENCE_BACKEND=github     # downloads the evidence snapshot from GitHub Releases
-JOBSTORE_BACKEND=filesystem # no database
-```
+EVIDENCE_BACKEND=github
+JOBSTORE_BACKEND=filesystem
+~~~
 
-Then run:
+The planner and synthesizer defaults are current OpenAI API model aliases:
+[GPT-5.4 nano](https://developers.openai.com/api/docs/models/gpt-5.4-nano) and
+[GPT-5.4 Mini](https://developers.openai.com/api/docs/models/gpt-5.4-mini).
 
-```bash
+Start the app:
+
+~~~bash
 streamlit run app.py
-```
+~~~
 
-`data/processed/mirassist_evidence_variant_a_rf_v1.parquet` is the active local
-production table. It is a byte-identical copy of the approved frozen scored release and is
-validated before cutover with `scripts/validate_variant_a_rf_v1_production.py`.
+The evidence snapshot is downloaded from the latest GitHub release and cached locally.
+No database is required.
 
----
+## Use the Claude skill
 
-## Option B — Claude skill
+The Claude skill needs no OpenAI key. On first use it downloads the production evidence
+snapshot from the latest GitHub release and caches it locally.
 
-The Claude skill retains its packaged compatibility runtime; the production application uses the Variant A/RF v1 retrieval core, but Claude
-plays the planner and synthesizer roles. **No API keys are required**. On first use it downloads a one-time evidence snapshot from this repo's GitHub
-Releases and caches it locally, so **end users configure nothing**. Skill assets live in
-[`mirassist-skill/`](mirassist-skill/), with a pre-packaged installer at `mirassist.skill`.
+1. Download `mirassist_skill.zip` from the
+   [latest release](https://github.com/Andy-Ring/miRAssist/releases/latest).
+2. In Claude, enable code execution.
+3. Add the zip as a custom skill.
+4. Start a new chat and ask a miRNA–target question in natural language.
 
-### Install & use
+The skill can also be run directly:
 
-1. **Download** [`mirassist_skill.zip`](https://github.com/Andy-Ring/miRAssist/releases)
-   from the latest release.
-2. In Claude, turn on **code execution** (Settings → Capabilities), then add the skill via
-   **Settings → Skills → `+` → Create skill** and select the zip.
-3. Start a new chat and ask a miRNA-target question in natural language, e.g.
-   *"Which miRNAs regulate PTEN?"* or *"Which genes does miR-21 target to promote apoptosis
-   in breast cancer?"*
-
-New to Claude skills? A step-by-step walkthrough is in
-[**INSTALL_SKILL.md**](INSTALL_SKILL.md).
-
-The first query downloads the evidence snapshot (~106 MB) and caches it; later queries are
-fast. Under the hood the skill runs a headless CLI you can also call directly:
-
-```bash
+~~~bash
 python mirassist-skill/scripts/retrieve.py \
-  --mirna "hsa-miR-21-5p" --tcga BRCA \
-  --phenotype apoptosis --observed-change promoted --perturbation overexpression \
-  --result-count 5 --pretty
-```
+  --mirna "hsa-miR-21-5p" \
+  --tcga BRCA \
+  --phenotype apoptosis \
+  --observed-change promoted \
+  --perturbation overexpression \
+  --result-count 5 \
+  --pretty
+~~~
 
-See [`mirassist-skill/SKILL.md`](mirassist-skill/SKILL.md) for the full query grammar and
-[`mirassist-skill/reference/`](mirassist-skill/reference/) for the QuerySpec schema and
-output-column reference.
+See [INSTALL_SKILL.md](INSTALL_SKILL.md) for installation details and
+[mirassist-skill/SKILL.md](mirassist-skill/SKILL.md) for the query grammar and grounding
+rules.
 
-## Configuration reference
+## Configuration
 
-| Variable | Purpose | Typical value |
+| Variable | Purpose | Default |
 |---|---|---|
-| `EVIDENCE_BACKEND` | Evidence source | `parquet` (default) / `postgres` / `rest` / explicit legacy `github` |
-| `EVIDENCE_TABLE` | Hosted versioned table | `mirassist_evidence_variant_a_rf_v1` |
-| `MIRASSIST_EVIDENCE` | Active local production table | `data/processed/mirassist_evidence_variant_a_rf_v1.parquet` |
-| `JOBSTORE_BACKEND` | Job persistence (app) | `filesystem` / `postgres` |
-| `MIRASSIST_USE_LEARNED_SCORE` | Enable persisted miRAssist ranking | `1` |
-| `MIRASSIST_LEARNED_SCORE_COLUMN` | Preferred persisted score field | `mirassist_model_score` |
-| `MIRASSIST_DEFAULT_RESULT_COUNT` | Ranked results shown | `5` |
-| `OPENAI_API_KEY` | OpenAI key (app only) | `sk-...` |
-| `MIRASSIST_PLANNER_MODEL` / `MIRASSIST_SYNTH_MODEL` | LLM models (app only) | `gpt-5.4-nano` / `gpt-5.4-mini` |
-
----
+| `EVIDENCE_BACKEND` | Evidence source | `github` |
+| `MIRASSIST_EVIDENCE` | Explicit local evidence file | unset |
+| `EVIDENCE_TABLE` | Hosted production table | versioned production table |
+| `JOBSTORE_BACKEND` | App job persistence | `filesystem` |
+| `MIRASSIST_USE_LEARNED_SCORE` | Use the persisted production score | `1` |
+| `MIRASSIST_LEARNED_SCORE_COLUMN` | Persisted score field | `mirassist_model_score` |
+| `MIRASSIST_DEFAULT_RESULT_COUNT` | Results shown | `5` |
+| `OPENAI_API_KEY` | OpenAI key for the web app | unset |
+| `MIRASSIST_PLANNER_MODEL` | Planner model | `gpt-5.4-nano` |
+| `MIRASSIST_SYNTH_MODEL` | Synthesis model | `gpt-5.4-mini` |
 
 ## Repository layout
 
-```
+~~~text
 miRAssist/
-├── app.py                     # Streamlit entry point (hosted on Posit)
-├── frontend/                  # Streamlit UI
-├── backend/                   # planner, canonical score/RF retrieval, pathways, synthesizer,
-│                              #   snapshot loader (evidence_bootstrap, parquet_snapshot)
-├── data/processed/            # pathway data
-├── evaluation/                # benchmarking & paper-figure pipeline
-├── mirassist-skill/           # Claude skill (SKILL.md, retrieval CLI, export_snapshot.py)
-├── mirassist.skill            # packaged, installable skill
-├── requirements.txt           # Streamlit-app dependencies
-└── .env.example               # configuration template
-```
+├── app.py                 # Streamlit entry point
+├── backend/               # planner, retrieval, ranking, and synthesis
+├── frontend/              # Streamlit interface and assets
+├── data/processed/        # compact pathway lookup data
+├── mirassist-skill/       # Claude skill source
+├── tests/                 # production regression tests
+├── requirements.txt
+└── .env.example
+~~~
 
----
+Large evidence tables, model artifacts, generated outputs, local research pipelines, and
+credentials are intentionally excluded from the repository. The production evidence
+snapshot is distributed through GitHub Releases.
 
+## Scientific scope
 
-## Production score and scientific limitations
+The miRAssist score is an uncalibrated random-forest vote fraction used only for relative
+prioritization within the evidence-supported candidate universe. It is not the probability
+that an interaction is biologically true.
 
-The **miRAssist score** is a relative prioritization score within the
-evidence-supported Variant A candidate universe. It is not a probability that an
-interaction is biologically true. Technically, RF v1 stores the raw uncalibrated
-random-forest positive-class vote fraction and uses it only for relative prioritization.
+Evaluation is positive-unlabeled: miRTarBase supplies known positives, not confirmed
+negatives. Results are conditioned on available sequence, conservation, binding, and
+expression evidence. MANE Select can omit isoform-specific interactions; TCGA
+anticorrelation is indirect; and CLIP support does not establish direct targeting in every
+biological context. Experimental validation remains necessary.
 
-Variant A requires a canonical 3′ UTR seed site plus TargetScan, miRNA-specific CLIP, or
-significant TCGA anticorrelation support. RF v1 does not support Variant D or the
-9.3-million sequence master. Evaluation is positive-unlabeled: miRTarBase supplies known
-positives, not confirmed negatives. Eligibility indicators (TargetScan/CLIP/TCGA)
-contribute materially to model performance, so results are evidence-conditioned.
-MANE Select can omit isoform-specific interactions; TCGA anticorrelation is indirect;
-and CLIP does not prove direct targeting in every assay context.
-
-Operational schema, rollback, and migration details are in
-[`docs/production_variant_a_rf_v1.md`](docs/production_variant_a_rf_v1.md).
-
-## Citation & license
+## Citation and license
 
 If you use miRAssist in your research, please cite:
 
 > Ring A, Xi Y. *miRAssist: a context-aware, evidence-integration framework for
-> interpretable miRNA-target prioritization.* In preparation 
-
-- **Code:** https://github.com/Andy-Ring/miRAssist
-- **App:** https://andy-ring-mirassist.share.connect.posit.cloud/
+> interpretable miRNA-target prioritization.* In preparation.
 
 Released under the [MIT License](LICENSE) © 2026 Andrew Ring.
