@@ -175,18 +175,6 @@ Large evidence tables, model artifacts, generated outputs, local research pipeli
 credentials are intentionally excluded from the repository. The production evidence
 snapshot is distributed through GitHub Releases.
 
-## Scientific scope
-
-The miRAssist score is an uncalibrated random-forest vote fraction used only for relative
-prioritization within the evidence-supported candidate universe. It is not the probability
-that an interaction is biologically true.
-
-Evaluation is positive-unlabeled: miRTarBase supplies known positives, not confirmed
-negatives. Results are conditioned on available sequence, conservation, binding, and
-expression evidence. MANE Select can omit isoform-specific interactions; TCGA
-anticorrelation is indirect; and CLIP support does not establish direct targeting in every
-biological context. Experimental validation remains necessary.
-
 ## Citation and license
 
 If you use miRAssist in your research, please cite:
